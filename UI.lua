@@ -17,8 +17,9 @@ local MODE_HELP = {
 	flip = "Flip: what you make is sold on the auction house where that beats the vendor, after the cut, the lost deposits and a haircut for what will not sell.",
 }
 local HOW = { vendor = "vendor", ah = "auction", de = "disenchant" }
+local DOT = "  \194\183  "   -- a middle dot between facts on one line
+local SHORT = { drop = "drop", vendor = "vendor", ["one side"] = "other faction's vendor", reputation = "reputation", quest = "quest", favor = "favour", trainer = "trainer" }
 local FROM = { drop = "a drop", vendor = "a vendor", ["one side"] = "the other faction's vendor", reputation = "a reputation reward", quest = "a quest", favor = "a favour reward" }
-local SRC = { vendor = "vendor", ah = "AH", guess = "estimate, no auction price" }
 
 local frame, ui
 local tab = "Route"
@@ -187,31 +188,34 @@ local function StatusLines(st)
 	if not st.result then return { { text = "Working out the route...", header = true } } end
 end
 
--- The step's reagents as text, and what one craft costs in things you actually buy: a reagent the route
--- makes itself in an earlier step is already paid for there.
+-- The step's reagents: what you buy, what an earlier step made, and what one craft costs in things you
+-- actually buy (a reagent the route makes itself is already paid for where it is made).
+local TAG = { vendor = "vendor", ah = "AH", guess = "estimate" }
 local function ReagentText(r, rec, made, bought)
-	local parts, cost = {}, 0
+	local buy, own, cost = {}, {}, 0
 	for _, x in ipairs(rec.reagents or {}) do
-		local unit = r.price and r.price[x.id]
-		local src = r.sources and SRC[r.sources[x.id] or ""] or nil
-		local s = CPath:ItemName(x.id) .. (x.count > 1 and (" x" .. x.count) or "")
+		local name = CPath:ItemName(x.id) .. (x.count > 1 and (" x" .. x.count) or "")
 		if made[x.id] and not bought[x.id] then
-			s = s .. " (made in an earlier step)"
+			own[#own + 1] = name
 		else
+			local unit = r.price and r.price[x.id]
+			local tag = r.sources and TAG[r.sources[x.id] or ""] or nil
 			if unit then
-				s = s .. " " .. M(unit) .. (src and (" " .. src) or "")
+				name = name .. " " .. M(unit) .. (tag and (" (" .. tag .. ")") or "")
 				cost = cost + unit * x.count
 			end
-			if made[x.id] then s = s .. " (partly made in an earlier step)" end
+			buy[#buy + 1] = name
 		end
-		parts[#parts + 1] = s
 	end
-	return table.concat(parts, ", "), cost
+	local parts = {}
+	if #buy > 0 then parts[#parts + 1] = "Buy: " .. table.concat(buy, ", ") end
+	if #own > 0 then parts[#parts + 1] = "Made earlier: " .. table.concat(own, ", ") end
+	return table.concat(parts, DOT), cost, #own > 0
 end
 
 local function PerPoint(v)
-	if v < 0 then return "a profit of " .. M(-v) .. " per skill point" end
-	return M(v) .. " per skill point"
+	if v < 0 then return "earns " .. M(-v) .. " per point" end
+	return M(v) .. " per point"
 end
 
 local function RouteLines()
@@ -243,61 +247,66 @@ local function RouteLines()
 	for k, s in ipairs(r.steps) do
 		local rec, info = r.recipes[s.spell], r.stepInfo[k]
 		local name = CPath:RecipeName(s.spell, rec.makes)
-		local matsText, matsCost = ReagentText(r, rec, made, bought)
+		local matsText, matsCost, usesOwn = ReagentText(r, rec, made, bought)
 		local net = priced and (s.crafts * (matsCost - info.sale)) or nil
-		local line = { text = string.format("%s  %s", gold(s.from .. "-" .. s.to), s.rod and ("Make one " .. name .. " (needed for the enchants that follow)") or (name .. " x" .. s.crafts)),
-			right = net and M(net) or nil, item = rec.makes and rec.makes.id }
+		local line = { text = string.format("%s  %s", gold(s.from .. "-" .. s.to), s.rod and ("Make one " .. name .. " (tool for later enchants)") or (name .. " x" .. s.crafts)),
+			right = net and (net < 0 and good("earns " .. M(-net)) or M(net)) or nil, item = rec.makes and rec.makes.id }
 		if st.known then
 			line.action = { label = "Craft " .. s.crafts, fn = function() CPath.Execute:Craft(st, k) end,
 				tip = "Crafts as many of this step as the mats in your bags allow." }
 		end
 		lines[#lines + 1] = line
+		local p = purchase[s.spell]
+		local recipeLine
 		if priced then
-			lines[#lines + 1] = { text = "Mats to buy " .. M(matsCost) .. " each: " .. matsText, muted = true, indent = 2 }
-			local back
-			if s.rod then back = "Kept: it is a tool."
-			elseif s.keep then back = "Kept: used as a material in a later step."
+			if matsText ~= "" then lines[#lines + 1] = { text = matsText, muted = true, indent = 2 } end
+			local facts = {}
+			if s.rod then facts[#facts + 1] = "Tool, kept"
+			elseif s.keep then facts[#facts + 1] = "Kept for later steps"
 			elseif info.sale > 0 and rec.makes then
 				local how = r.how[rec.makes.id] or "vendor"
-				back = "Back " .. M(info.sale) .. " each (" .. (HOW[how] or how) .. ")"
 				local de = how == "de" and st.stats and st.stats.deRange and st.stats.deRange[rec.makes.id]
-				if de then back = back .. ", anywhere from " .. M(de.lo) .. " to " .. M(de.hi) .. " per disenchant" end
-				back = back .. "."
-			elseif r.recovery == "keep" then back = "Nothing counted back (Keep mode)."
-			else back = "Nothing back: it cannot be sold." end
-			local why = string.format("%s Skill-up chance at %d: %s.", back, s.from, pct(info.p))
-			if info.perPoint and not s.rod then why = why .. " That is " .. PerPoint(info.perPoint) .. " at full material prices." end
+				if how == "de" then facts[#facts + 1] = "Disenchants for " .. M(info.sale) .. (de and (" (" .. M(de.lo) .. " to " .. M(de.hi) .. ")") or "")
+				else facts[#facts + 1] = "Sells " .. M(info.sale) .. " (" .. (HOW[how] or how) .. ")" end
+			elseif r.recovery == "keep" then facts[#facts + 1] = "Not sold (Keep mode)"
+			else facts[#facts + 1] = "Cannot be sold" end
+			if not s.rod then
+				facts[#facts + 1] = pct(info.p) .. " skill-up"
+				if info.perPoint then facts[#facts + 1] = PerPoint(info.perPoint) end
+			end
+			if p and (p.fee or 0) > 0 then facts[#facts + 1] = "Train " .. M(p.fee) end
+			if p and (p.price or 0) > 0 and not (p.via == "ah" or p.limited) then facts[#facts + 1] = "Recipe " .. M(p.price) .. " (" .. (SHORT[rec.source or ""] or "?") .. ")" end
+			lines[#lines + 1] = { text = table.concat(facts, DOT), muted = true, indent = 2 }
 			if info.alt and not s.rod then
-				local altName = CPath:RecipeName(info.alt.spell, info.alt.makes)
-				if info.perPoint and info.alt.perPoint >= info.perPoint then
-					why = why .. string.format(" Next best: %s at %s.", altName, PerPoint(info.alt.perPoint))
+				local alt = info.alt
+				local altName = CPath:RecipeName(alt.spell, alt.makes)
+				local text
+				if info.perPoint and alt.perPoint >= info.perPoint then
+					text = "Next best: " .. altName .. ", " .. PerPoint(alt.perPoint)
 				else
-					why = why .. string.format(" %s looks better here at %s, but this step wins over the whole route: it feeds a later step, or avoids buying a recipe or switching back and forth.", altName, PerPoint(info.alt.perPoint))
+					local reason
+					if s.keep then reason = "You need these for later steps."
+					elseif (alt.once or 0) > 0 then reason = "Its recipe costs " .. M(alt.once) .. " to get."
+					elseif usesOwn then reason = "This step uses materials you already made."
+					else reason = "This step is cheaper over the whole route." end
+					text = "Why not " .. altName .. " (" .. PerPoint(alt.perPoint) .. ")? " .. reason
 				end
+				lines[#lines + 1] = { text = text, muted = true, indent = 2 }
 			end
-			lines[#lines + 1] = { text = why, muted = true, indent = 2 }
+		elseif p and (p.fee or 0) > 0 then
+			lines[#lines + 1] = { text = "Train " .. M(p.fee), muted = true, indent = 2 }
 		end
-		local p = purchase[s.spell]
-		if p then
-			local bits = {}
-			if (p.fee or 0) > 0 then bits[#bits + 1] = "train " .. M(p.fee) end
-			local line = { muted = true, indent = 2, item = rec.taught_by }
-			if (p.price or 0) > 0 then
-				if p.via == "ah" then
-					bits[#bits + 1] = "buy the recipe on the auction house for about " .. M(p.price) .. " (otherwise it comes from " .. (FROM[rec.source or ""] or "elsewhere") .. ")"
-				elseif p.limited then
-					bits[#bits + 1] = "buy the recipe for " .. M(p.price) .. " from its vendor, who only stocks a few"
-				else
-					bits[#bits + 1] = "buy the recipe " .. M(p.price) .. " (" .. (rec.source or "?") .. ")"
-				end
-				if p.via == "ah" or p.limited then
-					line.muted = false
-					line.action = { label = "Can't get it", fn = function() Planner:MarkExcluded(s.spell, true) end,
-						tip = "Plans the route again without this recipe: use this if it is sold out or no longer listed." }
-				end
+		if p and (p.price or 0) > 0 and (p.via == "ah" or p.limited or not priced) then
+			local text
+			if p.via == "ah" then text = "Recipe: " .. M(p.price) .. " on the AH (normally " .. (FROM[rec.source or ""] or "from elsewhere") .. ")"
+			elseif p.limited then text = "Recipe: " .. M(p.price) .. " from a limited-stock vendor"
+			else text = "Recipe: " .. M(p.price) .. " (" .. (SHORT[rec.source or ""] or "?") .. ")" end
+			recipeLine = { text = text, indent = 2, item = rec.taught_by }
+			if p.via == "ah" or p.limited then
+				recipeLine.action = { label = "Can't get it", fn = function() Planner:MarkExcluded(s.spell, true) end,
+					tip = "Plans the route again without this recipe: use this if it is sold out or no longer listed." }
 			end
-			line.text = "One-off: " .. table.concat(bits, ", ") .. "."
-			lines[#lines + 1] = line
+			lines[#lines + 1] = recipeLine
 		end
 		lines[#lines].gap = 4
 	end
@@ -311,15 +320,16 @@ local function RouteLines()
 	end
 	if #extra > 0 then
 		table.sort(extra, function(a, b) return a.id < b.id end)
-		lines[#lines + 1] = { text = "Also make these materials for the steps above", header = true }
+		lines[#lines + 1] = { text = "Also make these materials, before the steps that use them", header = true }
 		for _, e in ipairs(extra) do
-			local line = { text = string.format("%s x%d more (%d crafts)", CPath:ItemName(e.id), e.units, e.crafts), indent = 1, item = e.id }
+			local line = { text = string.format("%s x%d", CPath:ItemName(e.id), e.units), indent = 1, item = e.id }
 			if st.known and e.spell then
 				line.action = { label = "Craft " .. e.crafts, fn = function() CPath.Execute:CraftSpell(st, e.spell, e.crafts, e.rec) end,
 					tip = "Crafts as many as the mats in your bags allow." }
 			end
 			lines[#lines + 1] = line
-			lines[#lines + 1] = { text = "Made from: " .. ReagentText(r, e.rec, made, bought) .. ". Make them before the step that uses them. No skill-ups are counted on from these.", muted = true, indent = 2 }
+			local from = ReagentText(r, e.rec, made, bought)
+			lines[#lines + 1] = { text = (from ~= "" and (from .. DOT) or "") .. "no skill-ups counted", muted = true, indent = 2 }
 		end
 		lines[#lines].gap = 6
 	end
@@ -331,15 +341,15 @@ local function RouteLines()
 		lines[#lines + 1] = { text = "Net cost", right = gold(M(r.net)), indent = 1, gap = 6 }
 	end
 	if st.options and #st.options > 0 then
-		lines[#lines + 1] = { text = "Recipes that would save gold if you get them (not on the auction house or at a vendor right now)", header = true }
+		lines[#lines + 1] = { text = "Recipes that would save gold (not on the AH or at a vendor right now)", header = true }
 		for _, o in ipairs(st.options) do
 			local name = CPath:RecipeName(o.spell, o.makes)
-			local where = FROM[o.source or ""] or (o.source or "?")
-			local text = string.format("%s (from %s, usable from %d): saves %s", name, where, o.learn or 0, o.gold and M(o.gold) or (o.crafts .. " crafts"))
+			local where = SHORT[o.source or ""] or (o.source or "?")
+			local text = string.format("%s (%s, skill %d): saves %s", name, where, o.learn or 0, o.gold and M(o.gold) or (o.crafts .. " crafts"))
 			if o.recipePrice and o.gold then
-				text = text .. string.format(". The recipe is %s on the auction house, so %s after buying it", M(o.recipePrice), M(o.gold - o.recipePrice))
+				text = text .. DOT .. string.format("recipe %s on the AH, so %s after buying it", M(o.recipePrice), M(o.gold - o.recipePrice))
 			end
-			lines[#lines + 1] = { text = text .. ".", indent = 1, item = o.recipeItem,
+			lines[#lines + 1] = { text = text, indent = 1, item = o.recipeItem,
 				action = { label = "I have it", fn = function() Planner:MarkOwned(o.spell, true) end, tip = "Plans the route as if this character knows the recipe." } }
 		end
 	elseif st.status ~= "done" then

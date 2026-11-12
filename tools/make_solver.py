@@ -205,7 +205,11 @@ rep("""  file.totals = { crafts = n, spent = spent and round(spent + oneTime) or
         local po = chance(o, s.from)
         if po > 0 then
           local c = (o.cost + effort - (reports and sale(o, listed) or 0)) / po
-          if not best or c < best.perPoint then best = { spell = o.spell, perPoint = c, p = po, makes = o.makes } end
+          if not best or c < best.perPoint then
+            -- what it would cost, once, to be able to make it at all (nothing if the route already uses it)
+            local once = (owned[o.spell] or used[o.spell]) and 0 or ((o.fee or 0) + recipeCost(o))
+            best = { spell = o.spell, perPoint = c, p = po, makes = o.makes, once = once }
+          end
         end
       end
     end
