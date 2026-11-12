@@ -17,6 +17,7 @@ local MODE_HELP = {
 	flip = "Flip: what you make is sold on the auction house where that beats the vendor, after the cut, the lost deposits and a haircut for what will not sell.",
 }
 local HOW = { vendor = "vendor", ah = "auction", de = "disenchant" }
+local FROM = { drop = "a drop", vendor = "a vendor", ["one side"] = "the other faction's vendor", reputation = "a reputation reward", quest = "a quest", favor = "a favour reward" }
 local SRC = { vendor = "vendor", ah = "AH", guess = "estimate, no auction price" }
 
 local frame, ui
@@ -280,8 +281,23 @@ local function RouteLines()
 		if p then
 			local bits = {}
 			if (p.fee or 0) > 0 then bits[#bits + 1] = "train " .. M(p.fee) end
-			if (p.price or 0) > 0 then bits[#bits + 1] = "buy the recipe " .. M(p.price) end
-			lines[#lines + 1] = { text = "One-off: " .. table.concat(bits, ", ") .. " (" .. (rec.source or "?") .. ").", muted = true, indent = 2 }
+			local line = { muted = true, indent = 2, item = rec.taught_by }
+			if (p.price or 0) > 0 then
+				if p.via == "ah" then
+					bits[#bits + 1] = "buy the recipe on the auction house for about " .. M(p.price) .. " (otherwise it comes from " .. (FROM[rec.source or ""] or "elsewhere") .. ")"
+				elseif p.limited then
+					bits[#bits + 1] = "buy the recipe for " .. M(p.price) .. " from its vendor, who only stocks a few"
+				else
+					bits[#bits + 1] = "buy the recipe " .. M(p.price) .. " (" .. (rec.source or "?") .. ")"
+				end
+				if p.via == "ah" or p.limited then
+					line.muted = false
+					line.action = { label = "Can't get it", fn = function() Planner:MarkExcluded(s.spell, true) end,
+						tip = "Plans the route again without this recipe: use this if it is sold out or no longer listed." }
+				end
+			end
+			line.text = "One-off: " .. table.concat(bits, ", ") .. "."
+			lines[#lines + 1] = line
 		end
 		lines[#lines].gap = 4
 	end
@@ -315,11 +331,11 @@ local function RouteLines()
 		lines[#lines + 1] = { text = "Net cost", right = gold(M(r.net)), indent = 1, gap = 6 }
 	end
 	if st.options and #st.options > 0 then
-		lines[#lines + 1] = { text = "Recipes that would save gold if you get them", header = true }
+		lines[#lines + 1] = { text = "Recipes that would save gold if you get them (not on the auction house or at a vendor right now)", header = true }
 		for _, o in ipairs(st.options) do
 			local name = CPath:RecipeName(o.spell, o.makes)
-			local where = o.limited and "limited-stock vendor" or (o.source or "?")
-			local text = string.format("%s (%s, usable from %d): saves %s", name, where, o.learn or 0, o.gold and M(o.gold) or (o.crafts .. " crafts"))
+			local where = FROM[o.source or ""] or (o.source or "?")
+			local text = string.format("%s (from %s, usable from %d): saves %s", name, where, o.learn or 0, o.gold and M(o.gold) or (o.crafts .. " crafts"))
 			if o.recipePrice and o.gold then
 				text = text .. string.format(". The recipe is %s on the auction house, so %s after buying it", M(o.recipePrice), M(o.gold - o.recipePrice))
 			end
@@ -328,6 +344,14 @@ local function RouteLines()
 		end
 	elseif st.status ~= "done" then
 		lines[#lines + 1] = { text = "Checking which other recipes would save gold...", muted = true }
+	end
+	local barred = CPath:Char().excluded[st.trade]
+	if barred and next(barred) then
+		lines[#lines + 1] = { text = "Recipes you said you cannot get", header = true }
+		for spell in pairs(barred) do
+			lines[#lines + 1] = { text = CPath:SpellName(spell) or ("recipe " .. spell), indent = 1,
+				action = { label = "Undo", fn = function() Planner:MarkExcluded(spell, false) end } }
+		end
 	end
 	local marks = CPath:Char().owned[st.trade]
 	if marks and next(marks) then
@@ -351,6 +375,7 @@ local function ShoppingLines()
 		if #rows == 0 then lines[#lines + 1] = { text = empty, muted = true, indent = 1 } end
 		for _, row in ipairs(rows) do
 			local text = string.format("%s x%d", CPath:ItemName(row.id), row.count)
+			if row.recipe then text = text .. muted("  (recipe for the route)") end
 			if row.have > 0 then text = text .. muted(string.format("  (need %d, have %d)", row.want, row.have)) end
 			lines[#lines + 1] = { text = text, indent = 1, item = row.id,
 				right = row.unit and (M(row.unit) .. " each = " .. M(row.unit * row.count)) or muted("no price") }
@@ -368,7 +393,9 @@ local function ShoppingLines()
 			local bits = {}
 			if (p.fee or 0) > 0 then bits[#bits + 1] = "train " .. M(p.fee) end
 			if (p.price or 0) > 0 then bits[#bits + 1] = "buy " .. M(p.price) end
-			lines[#lines + 1] = { text = CPath:RecipeName(p.spell, p.makes) .. muted("  (" .. (p.source or "?") .. ")"), indent = 1, right = table.concat(bits, ", "), item = p.item }
+			local where = p.via == "ah" and "auction house, on the list above" or (p.limited and "limited-stock vendor" or (p.source or "?"))
+			if p.got then where = where .. ", already in your bags" end
+			lines[#lines + 1] = { text = CPath:RecipeName(p.spell, p.makes) .. muted("  (" .. where .. ")"), indent = 1, right = table.concat(bits, ", "), item = p.item }
 		end
 		lines[#lines].gap = 6
 	end

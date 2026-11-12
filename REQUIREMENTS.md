@@ -60,8 +60,8 @@ What this addon adds over ForeverMaster:
 - **Compare board.** One view showing net gold to 150 and 300 for every crafting profession, so the cheapest one is visible without checking each (Bob). Solves run a few milliseconds a frame and results are cached until prices or settings change.
 - **Recursive craft-vs-buy for reagents.** If a reagent is cheaper to craft than to buy, use the craft sub-route in the parent cost. Include chains (ore → bar → tube → item).
 - **Recipe acquisition cost.** Include trainer fees and vendor recipe prices in the path. Count each once, and not at all for recipes the character already knows.
-- **Limited-stock recipes.** The addon only knows a vendor's stock while that vendor's window is open, so limited-stock recipes are left out of the route by default. They are listed separately as "would save X if you get it", and the player can mark one as owned to include it (Bob).
-- **Drop, quest and reputation recipes.** Same treatment as limited stock: out by default, shown as a saving, included once marked owned or known.
+- **Recipes you can go and buy (Liam, 12 Nov 2026).** A recipe that is on the auction house, or sold by a limited-stock vendor, is put in the route automatically when the route is cheaper with it after paying for it. Leveling costs far more than the trip to fetch a recipe. An auction-house recipe has to win even at 20% over its scanned price plus 50s, since the listing may have gone. The recipe goes on the Auctionator list. A "Can't get it" button plans again without it (sold out, no longer listed).
+- **Recipes you cannot simply buy.** Drop, quest and reputation recipes with no auction price stay out of the route and are listed as "would save X if you get it". The player can mark one as owned to include it (Bob).
 - **Useful overcraft.** Craft past the skill-up point when the extra items are needed later. Example: "craft 100, skill-ups go grey after 50, but you need 100 later" (Liam).
 - **Opportunity crafts.** Surface recipes that are currently profitable or better to vendor than to force through (Maz: wands, Working Overtime).
 

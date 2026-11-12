@@ -7,6 +7,8 @@
 --   opts.recovery            "keep" | "strict" | "flip": what the things you make are worth back
 --   opts.cut, opts.depositRate   auction cut and the deposit lost on what does not sell (fraction of vendor value)
 --   opts.vendor, opts.sell, opts.de   prices seen at merchants, vendor sell values, disenchant values by item
+--   opts.market { [spell] = copper }  recipes that can be bought on the auction house, used when that is clearly cheaper
+--   opts.buyLimited, opts.exclude     allow limited-stock vendor recipes; recipes the player says they cannot get
 --   result.net, result.sources, result.how, result.stepInfo, result.econ   receipts
 local _, CPath = ...
 local FC = {}
@@ -162,6 +164,8 @@ function FC.levelingSolve(input, opts, yield)
   local cut, depositRate = opts.cut or 0.05, opts.depositRate or 0
   local vendorSeen, sellSeen, realDe = opts.vendor or {}, opts.sell or {}, opts.de or {}
   local deValue = (opts.chooseDe == false) and {} or realDe   -- the route can be picked blind to disenchanting, then costed with it
+  local market, buyLimited, exclude = opts.market or {}, opts.buyLimited and true or false, opts.exclude or {}
+  local hurdle = true   -- while the route is picked, an auction-house recipe must beat its price by a margin; the report uses the real price
   local owned = {}
   for _, s in ipairs(opts.owned or {}) do owned[s] = true end
   local prices, items = opts.prices, input.items
@@ -200,10 +204,23 @@ function FC.levelingSolve(input, opts, yield)
   if input.unit == "dust" and dust == nil then effort = 0
   elseif input.effort ~= 0 then effort = input.effort
   else effort = input.unit == "dust" and 50 or 0 end
+  local function shopOk(r) return (r.source == "vendor" and (not r.limited or buyLimited)) or (r.source == "one side" and r.side == side) end
   local function usableBy(r)
     if owned[r.spell] then return true end
     if legacy then return r.source == "trainer" or r.source == "vendor" end
-    return r.source == "trainer" or (r.source == "vendor" and not r.limited) or (r.source == "one side" and r.side == side)
+    if exclude[r.spell] then return false end
+    return r.source == "trainer" or shopOk(r) or market[r.spell] ~= nil
+  end
+  -- What getting the recipe costs, and where from: its vendor, or the auction house when that is cheaper or the only way.
+  local function recipeCost(r)
+    local c, via
+    if BOUGHT[r.source] and (legacy or shopOk(r)) then c, via = (r.price or 0) * (1 - barter), "vendor" end
+    local m = market[r.spell]
+    if m then
+      local mm = hurdle and (m * 1.2 + 5000) or m
+      if c == nil or mm < c then c, via = mm, "ah" end
+    end
+    return c or 0, via
   end
   local meta = {}
   local all, usable, byId = {}, {}, {}
@@ -354,7 +371,7 @@ function FC.levelingSolve(input, opts, yield)
       if not seen[s.spell] then
         seen[s.spell] = true
         local r = byId[s.spell]
-        if not owned[s.spell] then n = n + (r.fee or 0) + (BOUGHT[r.source] and (r.price or 0) * (1 - barter) or 0) end
+        if not owned[s.spell] then n = n + (r.fee or 0) + recipeCost(r) end
       end
     end
     return n
@@ -395,7 +412,7 @@ function FC.levelingSolve(input, opts, yield)
     for _, s in ipairs(steps) do
       if not s.rod and not owned[s.spell] and not seen[s.spell] then
         local src = byId[s.spell].source
-        if (legacy and src == "vendor") or (not legacy and BOUGHT[src]) then seen[s.spell] = true; out[#out + 1] = s.spell end
+        if (legacy and src == "vendor") or (not legacy and (BOUGHT[src] or market[s.spell] ~= nil)) then seen[s.spell] = true; out[#out + 1] = s.spell end
       end
     end
     return out
@@ -524,7 +541,7 @@ function FC.levelingSolve(input, opts, yield)
   local file = { steps = out, recipes = recipes, parts = parts, gathered = gathered, sold = sold, shopping = shop, rods = input.rods }
   if legacy then return file end
 
-  deValue = realDe
+  deValue, hurdle = realDe, false
   local list = FC.levelingShopping(out, recipes, parts, gathered)
   local price, priceIds = {}, {}
   local function priceOf(id) if not priceIds[id] then priceIds[id] = true; price[id] = copper and round(weight(id)) or nil end end
@@ -555,8 +572,9 @@ function FC.levelingSolve(input, opts, yield)
   local purchases = {}
   for _, sp in ipairs(usedList) do
     local r = byId[sp]
-    if not owned[sp] and ((BOUGHT[r.source] and (r.price or 0) ~= 0) or (r.fee or 0) ~= 0) then
-      purchases[#purchases + 1] = { spell = sp, price = BOUGHT[r.source] and round((r.price or 0) * (1 - barter)) or 0, fee = r.fee or 0 }
+    local recipePrice, via = recipeCost(r)
+    if not owned[sp] and (recipePrice ~= 0 or (r.fee or 0) ~= 0) then
+      purchases[#purchases + 1] = { spell = sp, price = round(recipePrice), fee = r.fee or 0, via = via, limited = r.limited }
     end
   end
   local priced = 0
@@ -623,7 +641,11 @@ function FC.levelingOptions(input, opts, base, limit, yield)
   local sellsBack = (opts.recovery and opts.recovery ~= "keep") or (not opts.recovery and goal == "profit")
   local owned = {}
   for _, s in ipairs(opts.owned or {}) do owned[s] = true end
-  local function usable(r) return owned[r.spell] or r.source == "trainer" or (r.source == "vendor" and not r.limited) or (r.source == "one side" and r.side == side) end
+  local function usable(r)
+    if owned[r.spell] or r.source == "trainer" then return true end
+    if opts.exclude and opts.exclude[r.spell] then return false end
+    return (r.source == "vendor" and (not r.limited or opts.buyLimited)) or (r.source == "one side" and r.side == side) or (opts.market ~= nil and opts.market[r.spell] ~= nil)
+  end
   local function score(s)
     if goal == "fast" then return s.totals.crafts end
     if s.totals.spent == nil then return nil end
@@ -702,13 +724,15 @@ end
 
 -- CraftPath: the route for a recovery mode, never worse than the routes picked for the stricter modes sold the same way.
 -- The walk is greedy, so a route chosen for what its results sell for can cost more than the plain cheapest route
--- once both are sold; this solves each and keeps the lowest net.
+-- once both are sold; this solves each and keeps the lowest net. Likewise it is never worse than the route
+-- that buys no recipes off the auction house or from limited-stock vendors, unless that route stops short.
 function FC.solveBest(input, opts, yield)
   local best = FC.levelingSolve(input, opts, yield)
   local mode = opts.recovery or "keep"
-  if mode == "keep" or best.net == nil then return best end
-  local tries = mode == "flip" and { { "strict" }, { "keep" } } or { { "keep" } }
-  if opts.de and next(opts.de) then
+  if best.net == nil then return best end
+  local tries = {}
+  if mode == "flip" then tries = { { "strict" }, { "keep" } } elseif mode == "strict" then tries = { { "keep" } } end
+  if mode ~= "keep" and opts.de and next(opts.de) then
     tries[#tries + 1] = { mode, false }
     if mode == "flip" then tries[#tries + 1] = { "strict", false } end
   end
@@ -716,6 +740,11 @@ function FC.solveBest(input, opts, yield)
     local o = copy(opts); o.choose = t[1]
     if t[2] == false then o.chooseDe = false end
     local r = FC.levelingSolve(input, o, yield)
+    if r.net ~= nil and r["end"] >= best["end"] and r.net < best.net then best = r end
+  end
+  if (opts.market and next(opts.market)) or opts.buyLimited then
+    local o = copy(opts); o.market, o.buyLimited = nil, nil
+    local r = FC.solveBest(input, o, yield)
     if r.net ~= nil and r["end"] >= best["end"] and r.net < best.net then best = r end
   end
   return best

@@ -34,9 +34,26 @@ local function Owned(trade, input, hasTrade)
 	return list
 end
 
+-- Recipes that can be bought: on the auction house at the last scanned price. The solver uses one only when
+-- the route is cheaper with it after paying for it (and a margin, since the listing may be gone).
+local function Market(input, owned)
+	local have, market = {}, {}
+	for _, spell in ipairs(owned) do have[spell] = true end
+	for _, r in ipairs(input.recipes) do
+		if r.taught_by and not have[r.spell] and r.source ~= "trainer" and market[r.spell] == nil then
+			local price = CPath.Prices:Auction(r.taught_by)
+			if price then market[r.spell] = price end
+		end
+	end
+	return market
+end
+
 local function BaseOpts(trade, input, from, to, hasTrade)
 	local priceOpts, stats = CPath.Prices:Build(input)
 	local opts = { from = from, to = to, goal = "cheap", side = CPath:Side(), owned = Owned(trade, input, hasTrade) }
+	opts.market = Market(input, opts.owned)
+	opts.buyLimited = true
+	opts.exclude = CPath:Char().excluded[trade] or {}
 	for k, v in pairs(priceOpts) do opts[k] = v end
 	return opts, stats
 end
@@ -125,6 +142,14 @@ function Planner:Invalidate()
 	if CPath.UI and CPath.UI:IsShown() then
 		CPath:Debounce("plan", 0.3, function() Planner:Plan() end)
 	end
+end
+
+-- "I can't get it": plan without a recipe the route wanted to buy (sold out, not listed any more).
+function Planner:MarkExcluded(spell, excluded)
+	local c = CPath:Char()
+	c.excluded[c.trade] = c.excluded[c.trade] or {}
+	c.excluded[c.trade][spell] = excluded and true or nil
+	self:Invalidate()
 end
 
 function Planner:MarkOwned(spell, owned)

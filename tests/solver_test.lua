@@ -60,6 +60,30 @@ for _, seed in ipairs({ 7, 99 }) do
     end
   end
 end
+-- recipes bought on the auction house or from limited-stock vendors
+do
+  local P = prices(7)
+  for _, key in ipairs(TRADES) do
+    local b = S.levelingInput(key)
+    local base = { from = 1, to = 300, goal = "cheap", side = "h", prices = P, recovery = "strict" }
+    local function run(extra) local o = {}; for k, v in pairs(base) do o[k] = v end; for k, v in pairs(extra) do o[k] = v end; return S.solveBest(b, o) end
+    local plain = run({})
+    local cheap, dear = {}, {}
+    for _, r in ipairs(b.recipes) do if r.taught_by and r.source ~= "trainer" then cheap[r.spell] = 100; dear[r.spell] = 100000000 end end
+    local withCheap, withDear = run({ market = cheap, buyLimited = true }), run({ market = dear })
+    local viaAh, viaAhDear, spells = 0, 0, {}
+    for _, p in ipairs(withCheap.purchases) do if p.via == "ah" then viaAh = viaAh + 1; spells[p.spell] = true; check(p.price == 100, key .. " report uses the real recipe price") end end
+    for _, p in ipairs(withDear.purchases) do if p.via == "ah" then viaAhDear = viaAhDear + 1 end end
+    check(withCheap.net <= plain.net, string.format("%s cheap recipes never raise the net: %s vs %s", key, g(withCheap.net), g(plain.net)))
+    check(withDear["end"] > plain["end"] or (withDear.net <= plain.net and viaAhDear == 0), string.format("%s absurdly dear recipes are not bought (%d bought, %s vs %s)", key, viaAhDear, g(withDear.net), g(plain.net)))
+    if viaAh > 0 then
+      local without = run({ market = cheap, buyLimited = true, exclude = spells })
+      for _, p in ipairs(without.purchases) do check(not spells[p.spell], key .. " an excluded recipe is not bought") end
+      for _, st in ipairs(without.steps) do check(not spells[st.spell], key .. " an excluded recipe is not used") end
+    end
+    print(string.format("%-15s plain %9s  with 1s recipes %9s (%d bought on AH)", key, g(plain.net), g(withCheap.net), viaAh))
+  end
+end
 -- no prices at all, and a start above 1
 for _, key in ipairs(TRADES) do
   local b = S.levelingInput(key)

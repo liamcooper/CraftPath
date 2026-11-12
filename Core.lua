@@ -175,6 +175,7 @@ function CPath:Char()
 	end
 	for k, v in pairs(self.charDefaults) do if c[k] == nil then c[k] = v end end
 	c.owned = type(c.owned) == "table" and c.owned or {}   -- trade -> { [spell] = true } recipes marked as owned by hand
+	c.excluded = type(c.excluded) == "table" and c.excluded or {} -- trade -> { [spell] = true } recipes the player cannot get
 	c.log = type(c.log) == "table" and c.log or {}         -- skill-up log, see SkillLog.lua
 	return c
 end

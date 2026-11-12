@@ -28,7 +28,13 @@ function Shopping:Build(st)
 	end
 	for _, p in ipairs(r.purchases or {}) do
 		local rec = r.recipes[p.spell]
-		out.recipes[#out.recipes + 1] = { spell = p.spell, price = p.price, fee = p.fee, makes = rec and rec.makes, source = rec and rec.source, item = rec and rec.taught_by }
+		local item = rec and rec.taught_by
+		local got = item and CPath:ItemCount(item) > 0
+		out.recipes[#out.recipes + 1] = { spell = p.spell, price = p.price, fee = p.fee, makes = rec and rec.makes, source = rec and rec.source, item = item, via = p.via, limited = p.limited, got = got }
+		if p.via == "ah" and item and not got then
+			out.ah[#out.ah + 1] = { id = item, count = 1, want = 1, have = 0, unit = p.price, src = "ah", recipe = true }
+			out.ahCost = out.ahCost + p.price
+		end
 	end
 	return out
 end
@@ -84,7 +90,8 @@ function Shopping:Text(st)
 		lines[#lines + 1] = "Recipes"
 		for _, p in ipairs(list.recipes) do
 			local cost = (p.price or 0) + (p.fee or 0)
-			lines[#lines + 1] = string.format("%s (%s) %s", CPath:RecipeName(p.spell, p.makes), p.source or "?", CPath:Money(cost, true))
+			local where = p.via == "ah" and "auction house" or (p.limited and "limited-stock vendor" or (p.source or "?"))
+			lines[#lines + 1] = string.format("%s (%s) %s", CPath:RecipeName(p.spell, p.makes), where, CPath:Money(cost, true))
 		end
 	end
 	lines[#lines + 1] = ""

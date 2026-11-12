@@ -236,6 +236,34 @@ CPath:SetChar("trade", "Enchanting"); settle()
 check(CPath.Planner.state.status == "done", "enchanting plans: " .. tostring(CPath.Planner.state.error))
 show("Route")
 
+-- 3b. recipes on the auction house are bought when cheaper, go on the shopping list, and can be ruled out
+do
+  CPath:SetChar("trade", "Tailoring"); CPath:SetChar("target", 300); CPath:Set("recovery", "strict"); settle()
+  local st2 = CPath.Planner.state
+  local ahRecipe
+  for _, p in ipairs(st2.result.purchases) do if p.via == "ah" then ahRecipe = ahRecipe or p end end
+  check(ahRecipe ~= nil, "the test prices make at least one auction-house recipe worth buying")
+  if ahRecipe then
+    local item = st2.result.recipes[ahRecipe.spell].taught_by
+    local onList = false
+    for _, r in ipairs(CPath.Shopping:Build(st2).ah) do if r.id == item and r.recipe and r.count == 1 then onList = true end end
+    check(onList, "the recipe is on the auction list")
+    show("Route", true)
+    local n = 0
+    for _, l in ipairs(rendered) do if l.action and l.action.label == "Can't get it" then n = n + 1; if n == 1 then l.action.fn() end end end
+    check(n > 0, "a Can't get it button is shown")
+    settle()
+    local barred = CPath:Char().excluded.Tailoring
+    local spell = barred and next(barred)
+    check(spell ~= nil, "the recipe is recorded as unobtainable")
+    for _, p in ipairs(CPath.Planner.state.result.purchases) do check(p.spell ~= spell, "and the new route does not buy it") end
+    show("Route", true)
+    for _, l in ipairs(rendered) do if l.action and l.action.label == "Undo" then l.action.fn() end end
+    settle()
+    check(next(CPath:Char().excluded.Tailoring) == nil, "Undo clears it")
+  end
+end
+
 -- 4. shopping list, Auctionator, text, bags
 CPath:SetChar("trade", "Tailoring"); CPath:SetChar("target", 150); settle()
 st = CPath.Planner.state
