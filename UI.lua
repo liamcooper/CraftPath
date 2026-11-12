@@ -1,0 +1,812 @@
+-- CraftPath :: UI
+-- One window: the controls on top, then tabs (Route, Shopping, Perks, Board, Opportunities, Log) that are
+-- all drawn as lines of text with an optional button, so there is one renderer to get right.
+
+local _, CPath = ...
+local UI = {}
+CPath.UI = UI
+
+local Planner, Perks = CPath.Planner, CPath.Perks
+local WIDTH, HEIGHT = 860, 620
+local LIST_W = WIDTH - 58
+local TABS = { "Route", "Shopping", "Perks", "Board", "Opportunities", "Log" }
+local MODES = { { "keep", "Keep" }, { "strict", "Strict" }, { "flip", "Flip" } }
+local MODE_HELP = {
+	keep = "Keep: nothing you make is sold. The cost is what you spend.",
+	strict = "Strict: what you make is sold to a vendor.",
+	flip = "Flip: what you make is sold on the auction house where that beats the vendor, after the cut, the lost deposits and a haircut for what will not sell.",
+}
+local HOW = { vendor = "vendor", ah = "auction", de = "disenchant" }
+local SRC = { vendor = "vendor", ah = "AH", guess = "estimate, no auction price" }
+
+local frame, ui
+local tab = "Route"
+
+local function col(hex, text) return "|cff" .. hex .. tostring(text) .. "|r" end
+local function muted(t) return col("9a8d74", t) end
+local function gold(t) return col("ffd100", t) end
+local function good(t) return col("4cd137", t) end
+local function bad(t) return col("ff5b4b", t) end
+local function M(c) return CPath:Money(c) end
+local function pct(p) return string.format("%d%%", math.floor(p * 100 + 0.5)) end
+
+---------------------------------------------------------------------------
+-- Widgets
+---------------------------------------------------------------------------
+
+local function Skin(f, r, g, b, a)
+	if f.SetBackdrop then
+		f:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8", edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
+		f:SetBackdropColor(r or 0.07, g or 0.05, b or 0.03, a or 0.96)
+		f:SetBackdropBorderColor(0.42, 0.35, 0.24, 1)
+	else
+		local t = f:CreateTexture(nil, "BACKGROUND")
+		t:SetAllPoints()
+		t:SetColorTexture(r or 0.07, g or 0.05, b or 0.03, a or 0.96)
+	end
+end
+
+local function NewFrame(kind, name, parent)
+	return CreateFrame(kind, name, parent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+end
+
+local function Button(parent, text, width, onClick)
+	local b = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+	b:SetSize(width, 22)
+	b:SetText(text)
+	b:SetScript("OnClick", onClick)
+	return b
+end
+
+local function Label(parent, text, template)
+	local fs = parent:CreateFontString(nil, "OVERLAY", template or "GameFontHighlightSmall")
+	fs:SetJustifyH("LEFT")
+	fs:SetText(text or "")
+	return fs
+end
+
+local function Tip(widget, text)
+	widget:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_BOTTOMRIGHT")
+		GameTooltip:AddLine(type(text) == "function" and text() or text, 1, 1, 1, true)
+		GameTooltip:Show()
+	end)
+	widget:SetScript("OnLeave", function() GameTooltip:Hide() end)
+end
+
+---------------------------------------------------------------------------
+-- Copy window
+---------------------------------------------------------------------------
+
+local copyFrame
+function UI:ShowCopy(title, text)
+	if not copyFrame then
+		copyFrame = NewFrame("Frame", "CraftPathCopyFrame", UIParent)
+		copyFrame:SetSize(520, 420)
+		copyFrame:SetPoint("CENTER")
+		copyFrame:SetFrameStrata("DIALOG")
+		Skin(copyFrame)
+		copyFrame.title = Label(copyFrame, "", "GameFontNormal")
+		copyFrame.title:SetPoint("TOPLEFT", 12, -10)
+		local hint = Label(copyFrame, muted("Press Ctrl+C to copy, then Escape."))
+		hint:SetPoint("TOPLEFT", 12, -28)
+		local close = Button(copyFrame, "Close", 70, function() copyFrame:Hide() end)
+		close:SetPoint("TOPRIGHT", -8, -8)
+		local scroll = CreateFrame("ScrollFrame", "CraftPathCopyScroll", copyFrame, "UIPanelScrollFrameTemplate")
+		scroll:SetPoint("TOPLEFT", 12, -48)
+		scroll:SetPoint("BOTTOMRIGHT", -32, 12)
+		local edit = CreateFrame("EditBox", nil, scroll)
+		edit:SetMultiLine(true)
+		edit:SetAutoFocus(false)
+		edit:SetFontObject(ChatFontNormal or GameFontHighlightSmall)
+		edit:SetWidth(460)
+		edit:SetScript("OnEscapePressed", function() copyFrame:Hide() end)
+		scroll:SetScrollChild(edit)
+		copyFrame.edit = edit
+	end
+	copyFrame.title:SetText(title)
+	copyFrame.edit:SetText(text)
+	copyFrame:Show()
+	copyFrame.edit:SetFocus()
+	copyFrame.edit:HighlightText()
+end
+
+---------------------------------------------------------------------------
+-- Line renderer
+---------------------------------------------------------------------------
+-- A line: { text, right, indent, header, muted, item, action = { label, fn, tip } }
+
+local rows = {}
+local function Row(i)
+	if rows[i] then return rows[i] end
+	local row = CreateFrame("Button", nil, ui.content)
+	row.left = Label(row)
+	row.left:SetPoint("TOPLEFT", 0, -1)
+	row.left:SetJustifyV("TOP")
+	if row.left.SetWordWrap then row.left:SetWordWrap(true) end
+	row.right = Label(row)
+	row.right:SetJustifyH("RIGHT")
+	row.action = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+	row.action:SetSize(92, 18)
+	row.action:SetPoint("TOPRIGHT", 0, 0)
+	row.right:SetPoint("TOPRIGHT", row.action, "TOPLEFT", -8, -2)
+	row:SetScript("OnEnter", function(self)
+		if not self.item then return end
+		GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
+		local ok = pcall(GameTooltip.SetHyperlink, GameTooltip, "item:" .. self.item)
+		if ok then GameTooltip:Show() else GameTooltip:Hide() end
+	end)
+	row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+	rows[i] = row
+	return row
+end
+
+function UI:Render(lines)
+	local y = 0
+	for i, l in ipairs(lines) do
+		local row = Row(i)
+		local indent = (l.indent or 0) * 16
+		row:ClearAllPoints()
+		row:SetPoint("TOPLEFT", ui.content, "TOPLEFT", indent, -y)
+		row:SetWidth(LIST_W - indent)
+		row.item = l.item
+		row.left:SetFontObject(l.header and GameFontNormal or GameFontHighlightSmall)
+		local text = l.text or ""
+		if l.muted then text = muted(text) end
+		row.right:SetText(l.right or "")
+		local rightW = (l.right and l.right ~= "") and (row.right:GetStringWidth() + 12) or 0
+		row.left:SetWidth(LIST_W - indent - rightW - 100)
+		row.left:SetText(text)
+		if l.action then
+			row.action:SetText(l.action.label)
+			row.action:SetScript("OnClick", l.action.fn)
+			if l.action.tip then Tip(row.action, l.action.tip) else row.action:SetScript("OnEnter", nil); row.action:SetScript("OnLeave", nil) end
+			row.action:Show()
+		else
+			row.action:Hide()
+		end
+		local h = math.max(l.header and 20 or 15, (row.left:GetStringHeight() or 12) + 4)
+		row:SetHeight(h)
+		row:Show()
+		y = y + h + (l.gap or 0)
+	end
+	for i = #lines + 1, #rows do rows[i]:Hide() end
+	ui.content:SetHeight(math.max(y, 10))
+end
+
+---------------------------------------------------------------------------
+-- Tab contents
+---------------------------------------------------------------------------
+
+local function StatusLines(st)
+	if st.status == "error" then return { { text = bad(st.error or "Something went wrong."), header = true } } end
+	if st.reached then
+		return { { text = string.format("%s is already at %d, which is at or past the target of %d.", st.trade, st.from, st.to), header = true } }
+	end
+	if not st.result then return { { text = "Working out the route...", header = true } } end
+end
+
+-- The step's reagents as text, and what one craft costs in things you actually buy: a reagent the route
+-- makes itself in an earlier step is already paid for there.
+local function ReagentText(r, rec, made, bought)
+	local parts, cost = {}, 0
+	for _, x in ipairs(rec.reagents or {}) do
+		local unit = r.price and r.price[x.id]
+		local src = r.sources and SRC[r.sources[x.id] or ""] or nil
+		local s = CPath:ItemName(x.id) .. (x.count > 1 and (" x" .. x.count) or "")
+		if made[x.id] and not bought[x.id] then
+			s = s .. " (made in an earlier step)"
+		else
+			if unit then
+				s = s .. " " .. M(unit) .. (src and (" " .. src) or "")
+				cost = cost + unit * x.count
+			end
+			if made[x.id] then s = s .. " (partly made in an earlier step)" end
+		end
+		parts[#parts + 1] = s
+	end
+	return table.concat(parts, ", "), cost
+end
+
+local function PerPoint(v)
+	if v < 0 then return "a profit of " .. M(-v) .. " per skill point" end
+	return M(v) .. " per skill point"
+end
+
+local function RouteLines()
+	local st = Planner.state
+	local lines = StatusLines(st)
+	if lines then return lines end
+	lines = {}
+	local r = st.result
+	local priced = r.totals.spent ~= nil
+	local purchase = {}
+	for _, p in ipairs(r.purchases or {}) do purchase[p.spell] = p end
+	local stop = r["end"] or st.from
+	local made, bought = {}, {}
+	for _, x in ipairs(r.list and r.list.made or {}) do made[x.id] = true end
+	for _, x in ipairs(r.list and r.list.buy or {}) do bought[x.id] = true end
+	lines[#lines + 1] = { text = string.format("%s %d to %d: %d crafts", st.trade, st.from, stop, r.totals.crafts), header = true,
+		right = priced and r.net and ("net " .. M(r.net)) or nil }
+	if not st.known then lines[#lines + 1] = { text = "This character has not learned " .. st.trade .. ". The route starts from skill 1.", muted = true } end
+	if stop < st.to then
+		lines[#lines + 1] = { text = bad(string.format("The recipes this character can get stop giving skill-ups at %d, short of %d.", stop, st.to)) }
+	end
+	if st.known and st.max and st.max < st.to and st.max > 0 then
+		lines[#lines + 1] = { text = string.format("Your skill is capped at %d until you train the next rank at a trainer.", st.max), muted = true }
+	end
+	if not priced then
+		lines[#lines + 1] = { text = bad("No auction prices for this profession's materials yet. Run an Auctionator scan at the auction house to see costs.") }
+	end
+	lines[#lines].gap = 6
+	for k, s in ipairs(r.steps) do
+		local rec, info = r.recipes[s.spell], r.stepInfo[k]
+		local name = CPath:RecipeName(s.spell, rec.makes)
+		local matsText, matsCost = ReagentText(r, rec, made, bought)
+		local net = priced and (s.crafts * (matsCost - info.sale)) or nil
+		local line = { text = string.format("%s  %s", gold(s.from .. "-" .. s.to), s.rod and ("Make one " .. name .. " (needed for the enchants that follow)") or (name .. " x" .. s.crafts)),
+			right = net and M(net) or nil, item = rec.makes and rec.makes.id }
+		if st.known then
+			line.action = { label = "Craft " .. s.crafts, fn = function() CPath.Execute:Craft(st, k) end,
+				tip = "Crafts as many of this step as the mats in your bags allow." }
+		end
+		lines[#lines + 1] = line
+		if priced then
+			lines[#lines + 1] = { text = "Mats to buy " .. M(matsCost) .. " each: " .. matsText, muted = true, indent = 2 }
+			local back
+			if s.rod then back = "Kept: it is a tool."
+			elseif s.keep then back = "Kept: used as a material in a later step."
+			elseif info.sale > 0 and rec.makes then
+				local how = r.how[rec.makes.id] or "vendor"
+				back = "Back " .. M(info.sale) .. " each (" .. (HOW[how] or how) .. ")"
+				local de = how == "de" and st.stats and st.stats.deRange and st.stats.deRange[rec.makes.id]
+				if de then back = back .. ", anywhere from " .. M(de.lo) .. " to " .. M(de.hi) .. " per disenchant" end
+				back = back .. "."
+			elseif r.recovery == "keep" then back = "Nothing counted back (Keep mode)."
+			else back = "Nothing back: it cannot be sold." end
+			local why = string.format("%s Skill-up chance at %d: %s.", back, s.from, pct(info.p))
+			if info.perPoint and not s.rod then why = why .. " That is " .. PerPoint(info.perPoint) .. " at full material prices." end
+			if info.alt and not s.rod then
+				local altName = CPath:RecipeName(info.alt.spell, info.alt.makes)
+				if info.perPoint and info.alt.perPoint >= info.perPoint then
+					why = why .. string.format(" Next best: %s at %s.", altName, PerPoint(info.alt.perPoint))
+				else
+					why = why .. string.format(" %s looks better here at %s, but this step wins over the whole route: it feeds a later step, or avoids buying a recipe or switching back and forth.", altName, PerPoint(info.alt.perPoint))
+				end
+			end
+			lines[#lines + 1] = { text = why, muted = true, indent = 2 }
+		end
+		local p = purchase[s.spell]
+		if p then
+			local bits = {}
+			if (p.fee or 0) > 0 then bits[#bits + 1] = "train " .. M(p.fee) end
+			if (p.price or 0) > 0 then bits[#bits + 1] = "buy the recipe " .. M(p.price) end
+			lines[#lines + 1] = { text = "One-off: " .. table.concat(bits, ", ") .. " (" .. (rec.source or "?") .. ").", muted = true, indent = 2 }
+		end
+		lines[#lines].gap = 4
+	end
+	-- Materials the steps use that are cheaper to make than to buy, beyond what the steps themselves make.
+	local extra = {}
+	for id, units in pairs(r.list and r.list.more or {}) do
+		local spell, rec
+		for sp, x in pairs(r.recipes) do if x.makes and x.makes.id == id then spell, rec = sp, x end end
+		if not spell and r.parts and r.parts[id] then spell, rec = r.parts[id].spell, r.parts[id] end
+		if rec and rec.makes then extra[#extra + 1] = { id = id, units = units, crafts = math.ceil(units / rec.makes.count), spell = spell, rec = rec } end
+	end
+	if #extra > 0 then
+		table.sort(extra, function(a, b) return a.id < b.id end)
+		lines[#lines + 1] = { text = "Also make these materials for the steps above", header = true }
+		for _, e in ipairs(extra) do
+			local line = { text = string.format("%s x%d more (%d crafts)", CPath:ItemName(e.id), e.units, e.crafts), indent = 1, item = e.id }
+			if st.known and e.spell then
+				line.action = { label = "Craft " .. e.crafts, fn = function() CPath.Execute:CraftSpell(st, e.spell, e.crafts, e.rec) end,
+					tip = "Crafts as many as the mats in your bags allow." }
+			end
+			lines[#lines + 1] = line
+			lines[#lines + 1] = { text = "Made from: " .. ReagentText(r, e.rec, made, bought) .. ". Make them before the step that uses them. No skill-ups are counted on from these.", muted = true, indent = 2 }
+		end
+		lines[#lines].gap = 6
+	end
+	if priced then
+		lines[#lines + 1] = { text = "Totals", header = true }
+		lines[#lines + 1] = { text = "Materials and recipes to buy", right = M(r.totals.spent), indent = 1 }
+		if (r.totals.oneTime or 0) > 0 then lines[#lines + 1] = { text = "of which training and recipes", right = M(r.totals.oneTime), indent = 2, muted = true } end
+		if r.recovery ~= "keep" then lines[#lines + 1] = { text = "Back from what you make", right = good(M(r.totals.resale or 0)), indent = 1 } end
+		lines[#lines + 1] = { text = "Net cost", right = gold(M(r.net)), indent = 1, gap = 6 }
+	end
+	if st.options and #st.options > 0 then
+		lines[#lines + 1] = { text = "Recipes that would save gold if you get them", header = true }
+		for _, o in ipairs(st.options) do
+			local name = CPath:RecipeName(o.spell, o.makes)
+			local where = o.limited and "limited-stock vendor" or (o.source or "?")
+			local text = string.format("%s (%s, usable from %d): saves %s", name, where, o.learn or 0, o.gold and M(o.gold) or (o.crafts .. " crafts"))
+			if o.recipePrice and o.gold then
+				text = text .. string.format(". The recipe is %s on the auction house, so %s after buying it", M(o.recipePrice), M(o.gold - o.recipePrice))
+			end
+			lines[#lines + 1] = { text = text .. ".", indent = 1, item = o.recipeItem,
+				action = { label = "I have it", fn = function() Planner:MarkOwned(o.spell, true) end, tip = "Plans the route as if this character knows the recipe." } }
+		end
+	elseif st.status ~= "done" then
+		lines[#lines + 1] = { text = "Checking which other recipes would save gold...", muted = true }
+	end
+	local marks = CPath:Char().owned[st.trade]
+	if marks and next(marks) then
+		lines[#lines + 1] = { text = "Recipes you marked as owned", header = true }
+		for spell in pairs(marks) do
+			lines[#lines + 1] = { text = CPath:SpellName(spell) or ("recipe " .. spell), indent = 1,
+				action = { label = "Unmark", fn = function() Planner:MarkOwned(spell, false) end } }
+		end
+	end
+	return lines
+end
+
+local function ShoppingLines()
+	local st = Planner.state
+	local lines = StatusLines(st)
+	if lines then return lines end
+	lines = {}
+	local list = CPath.Shopping:Build(st)
+	local function section(title, rows, total, empty)
+		lines[#lines + 1] = { text = title, header = true, right = (#rows > 0 and total) and M(total) or nil }
+		if #rows == 0 then lines[#lines + 1] = { text = empty, muted = true, indent = 1 } end
+		for _, row in ipairs(rows) do
+			local text = string.format("%s x%d", CPath:ItemName(row.id), row.count)
+			if row.have > 0 then text = text .. muted(string.format("  (need %d, have %d)", row.want, row.have)) end
+			lines[#lines + 1] = { text = text, indent = 1, item = row.id,
+				right = row.unit and (M(row.unit) .. " each = " .. M(row.unit * row.count)) or muted("no price") }
+		end
+		lines[#lines].gap = 6
+	end
+	section("Buy at the auction house", list.ah, list.ahCost, "Nothing: you have it all, or the rest comes from vendors.")
+	section("Buy from a vendor", list.vendor, list.vendorCost, "Nothing.")
+	if #list.vendor > 0 then
+		lines[#lines + 1] = { text = "Open a vendor that sells these and CraftPath shows a button above the vendor window to buy what is missing.", muted = true, indent = 1, gap = 6 }
+	end
+	if #list.recipes > 0 then
+		lines[#lines + 1] = { text = "Recipes to train or buy", header = true }
+		for _, p in ipairs(list.recipes) do
+			local bits = {}
+			if (p.fee or 0) > 0 then bits[#bits + 1] = "train " .. M(p.fee) end
+			if (p.price or 0) > 0 then bits[#bits + 1] = "buy " .. M(p.price) end
+			lines[#lines + 1] = { text = CPath:RecipeName(p.spell, p.makes) .. muted("  (" .. (p.source or "?") .. ")"), indent = 1, right = table.concat(bits, ", "), item = p.item }
+		end
+		lines[#lines].gap = 6
+	end
+	if #list.have > 0 then
+		lines[#lines + 1] = { text = "Already in your bags or bank", header = true }
+		for _, row in ipairs(list.have) do
+			lines[#lines + 1] = { text = string.format("%s x%d", CPath:ItemName(row.id), row.have), indent = 1, muted = true, item = row.id }
+		end
+		lines[#lines + 1] = { text = "Bank counts are from the last time the game saw your bank.", muted = true, indent = 1 }
+	end
+	return lines
+end
+
+local function PerkLines()
+	local st = Planner.state
+	local lines = StatusLines(st)
+	if lines then return lines end
+	lines = {}
+	local r = st.result
+	if r.net == nil then return { { text = "The comparison needs auction prices. Run an Auctionator scan first.", header = true } } end
+	local function row(title, res, extra)
+		lines[#lines + 1] = { text = title, right = res.net and (M(res.net) .. muted("  " .. res.totals.crafts .. " crafts")) or "?", header = true }
+		if extra then lines[#lines + 1] = extra end
+	end
+	local spent = Perks:Points(st.alloc)
+	lines[#lines + 1] = { text = "Net cost of " .. st.trade .. " " .. st.from .. " to " .. (r["end"] or st.to) .. ", with and without Legacy points", header = true, gap = 6 }
+	if not st.zero then
+		lines[#lines + 1] = { text = "Comparing allocations...", muted = true }
+		return lines
+	end
+	row("No points spent", st.zero)
+	if spent > 0 then row("As spent now (" .. Perks:Describe(st.alloc, st.trade) .. ")", r) end
+	if st.best and st.bestAlloc then
+		local base = st.zero.net
+		local same = Perks:Same(st.bestAlloc, st.alloc)
+		local pts = Perks:Points(st.bestAlloc)
+		local title = (spent > 0 and "Best use of what is left" or "Best points spent") .. " (" .. Perks:Describe(st.bestAlloc, st.trade) .. ")"
+		row(title, st.best)
+		if st.best.net and base then
+			local saved = base - st.best.net
+			local text = string.format("Saves %s against no points: %s per point over %d points.", M(saved), pts > 0 and M(saved / pts) or "-", pts)
+			lines[#lines + 1] = { text = text, indent = 1,
+				action = (not same) and { label = "Use this", fn = function()
+					CPath:SetChar("wo", st.bestAlloc.wo); CPath:SetChar("barter", st.bestAlloc.barter); CPath:SetChar("chef", st.bestAlloc.chef)
+				end, tip = "Sets this character's perk ranks to this allocation, so the Route tab shows that route." } or nil }
+		end
+		if same and spent > 0 then lines[#lines + 1] = { text = "Your current ranks are already the best use of the points allowed.", muted = true, indent = 1 } end
+		lines[#lines].gap = 6
+		if st.solo and #st.solo > 0 then
+			lines[#lines + 1] = { text = "Where the saving comes from (each perk on its own)", header = true }
+			for _, s in ipairs(st.solo) do
+				local d = Perks.DEFS[s.key]
+				local saved = (base and s.net) and (base - s.net) or nil
+				lines[#lines + 1] = { text = string.format("%s %d: %s", d.name, s.rank, d.what), indent = 1,
+					right = saved and (M(saved) .. muted(" saved, " .. CPath:Money(saved / s.rank) .. " per point")) or "?" }
+			end
+			lines[#lines].gap = 6
+		end
+	end
+	lines[#lines + 1] = { text = string.format("The planner may spend up to %d of this character's 16 points. Lower \"May spend\" above to hold points back for other perks.", st.cap), muted = true }
+	lines[#lines + 1] = { text = "Working Overtime is counted as " .. (CPath.settings.woMult and "multiplying the skill-up chance (50% becomes 60% at rank 5)" or "adding to the skill-up chance (50% becomes 70% at rank 5)") .. ". The Log tab shows which fits once you have crafted enough.", muted = true }
+	lines[#lines + 1] = { text = "Routes are found by a step-by-step search, so two allocations that are nearly equal can come out a little out of order.", muted = true }
+	return lines
+end
+
+local function BoardLines()
+	local b = Planner.board
+	local lines = {}
+	local run = { label = b and "Work out again" or "Work it out", fn = function() Planner:Board() end }
+	lines[#lines + 1] = { text = "Net cost of every profession for this character, in " .. (CPath.settings.recovery) .. " mode with the perks set above", header = true, action = run, gap = 6 }
+	if not b then
+		lines[#lines + 1] = { text = "Press \"Work it out\" to compare all eight professions. It takes a few seconds.", muted = true }
+		return lines
+	end
+	if b.status == "error" then lines[#lines + 1] = { text = bad(b.error) }; return lines end
+	local function cell(c)
+		if not c then return "?" end
+		if c.reached then return good("done") end
+		if c.net == nil then return muted("no prices") end
+		return M(c.net)
+	end
+	local sorted = {}
+	for _, row in ipairs(b.rows) do sorted[#sorted + 1] = row end
+	table.sort(sorted, function(x, y)
+		local a, c = x.cells[300] and x.cells[300].net, y.cells[300] and y.cells[300].net
+		if a and c then return a < c end
+		return (a ~= nil) and (c == nil)
+	end)
+	for _, row in ipairs(sorted) do
+		local c150, c300 = row.cells[150], row.cells[300]
+		local text = string.format("%s%s", gold(row.trade), row.known and muted("  (at " .. row.from .. ")") or "")
+		local right = "to 150: " .. cell(c150) .. "    to 300: " .. cell(c300)
+		lines[#lines + 1] = { text = text, right = right,
+			action = { label = "Open", fn = function() CPath:SetChar("trade", row.trade); UI:SetTab("Route") end } }
+		local notes = {}
+		if c300 and c300.stop and c300.stop < 300 then notes[#notes + 1] = "trainer and vendor recipes stop at " .. c300.stop end
+		if row.wanted and row.priced and row.priced < row.wanted then notes[#notes + 1] = (row.wanted - row.priced) .. " of " .. row.wanted .. " items have no auction price" end
+		if c300 and c300.crafts then notes[#notes + 1] = c300.crafts .. " crafts to 300" end
+		if #notes > 0 then lines[#lines + 1] = { text = table.concat(notes, "; ") .. ".", muted = true, indent = 2 } end
+	end
+	if b.status == "working" then lines[#lines + 1] = { text = string.format("Working... %d of %d", #b.rows, #CPath.TRADES), muted = true } end
+	if b.recovery ~= CPath.settings.recovery then lines[#lines + 1] = { text = "These figures are for " .. b.recovery .. " mode. Work it out again for the current mode.", muted = true } end
+	return lines
+end
+
+local function OpportunityLines()
+	local st = Planner.state
+	local lines = StatusLines(st)
+	if lines then return lines end
+	lines = {}
+	local list = Planner:Opportunities() or {}
+	lines[#lines + 1] = { text = st.trade .. " recipes worth more than their mats right now", header = true }
+	lines[#lines + 1] = { text = "Sold the best way open to them: vendor, auction house after the cut and lost deposits" .. (CPath.settings.de and ", or disenchanted" or "") .. ". Auction sales are capped by how many are listed.", muted = true, gap = 6 }
+	if #list == 0 then
+		lines[#lines + 1] = { text = "None at current prices.", indent = 1 }
+		return lines
+	end
+	for i, e in ipairs(list) do
+		if i > 60 then break end
+		local name = CPath:RecipeName(e.spell, e.makes)
+		local tag
+		if e.learn > st.from then tag = muted("  needs skill " .. e.learn)
+		elseif e.p >= 1 then tag = col("ff8040", "  skill-up certain")
+		elseif e.p > 0 then tag = col("ffff00", "  skill-up " .. pct(e.p))
+		else tag = muted("  no skill-up") end
+		if not e.usable then tag = tag .. muted("  recipe from " .. (e.source or "?")) end
+		lines[#lines + 1] = { text = name .. tag, indent = 1, item = e.makes and e.makes.id,
+			right = good("+" .. M(e.profit)) .. muted("  mats " .. CPath:Money(e.cost) .. ", back " .. CPath:Money(e.sale) .. " " .. (HOW[e.how] or e.how)) }
+	end
+	return lines
+end
+
+local BUILDERS = {
+	Route = RouteLines, Shopping = ShoppingLines, Perks = PerkLines, Board = BoardLines,
+	Opportunities = OpportunityLines, Log = function() return CPath.SkillLog:Lines() end,
+}
+
+---------------------------------------------------------------------------
+-- Controls
+---------------------------------------------------------------------------
+
+local function Summary()
+	local st = Planner.state
+	local r = st.result
+	if st.status == "error" then return bad(st.error or "") end
+	if st.reached then return "Already at the target." end
+	if not r then return "Working out the route..." end
+	local a
+	if r.net then
+		a = "Net cost " .. gold(M(r.net))
+		if r.recovery ~= "keep" then a = a .. muted(" = spend ") .. M(r.totals.spent) .. muted(" less ") .. M(r.totals.resale or 0) .. muted(" back") end
+		a = a .. muted("  -  ") .. r.totals.crafts .. " crafts"
+	else
+		a = r.totals.crafts .. " crafts. " .. bad("No auction prices yet.")
+	end
+	local b = ""
+	if st.zero and st.best and st.zero.net and st.best.net and r.net then
+		if Perks:Points(st.alloc) == 0 then
+			if Perks:Points(st.bestAlloc) > 0 and st.best.net < st.zero.net then
+				b = "With no points: " .. M(st.zero.net) .. ". Best points spent (" .. Perks:Describe(st.bestAlloc, st.trade) .. "): " .. M(st.best.net) .. ", saving " .. good(M(st.zero.net - st.best.net)) .. ". See the Perks tab."
+			else
+				b = "Legacy points would not make this route cheaper."
+			end
+		else
+			b = "With no points this would be " .. M(st.zero.net) .. ": your ranks save " .. good(M(st.zero.net - r.net)) .. "."
+			if not Perks:Same(st.bestAlloc, st.alloc) and st.best.net < r.net then b = b .. " Spending the rest could save another " .. good(M(r.net - st.best.net)) .. "." end
+		end
+	elseif st.status ~= "done" then
+		b = muted("Comparing Legacy point allocations...")
+	end
+	return a .. "\n" .. b
+end
+
+local function StatusText()
+	local st = Planner.state
+	local s = st.stats
+	local bits = {}
+	if s then
+		if not s.auctionator then bits[#bits + 1] = bad("Auctionator is not loaded")
+		elseif s.priced == 0 then bits[#bits + 1] = bad("no auction prices: scan with Auctionator")
+		else bits[#bits + 1] = string.format("%d of %d items have an auction price", s.priced, s.wanted) end
+		if s.dePending > 0 then bits[#bits + 1] = s.dePending .. " items still loading for disenchant values" end
+	end
+	bits[#bits + 1] = "ForeverMaster data " .. CPath:DataVersion()
+	return muted(table.concat(bits, "  -  "))
+end
+
+function UI:RefreshControls()
+	if not frame then return end
+	local c, s = CPath:Char(), CPath.settings
+	ui.trade:SetText(c.trade)
+	-- never overwrite the box while it is being typed in
+	if not (ui.target.HasFocus and ui.target:HasFocus()) then ui.target:SetText(tostring(c.target)) end
+	for _, m in ipairs(MODES) do
+		ui.mode[m[1]]:SetText(s.recovery == m[1] and ("[" .. m[2] .. "]") or m[2])
+	end
+	ui.de:SetText("Disenchant: " .. (s.de and "on" or "off"))
+	ui.hours:SetText("Listing: " .. s.listHours .. "h")
+	for _, key in ipairs(Perks.ORDER) do
+		local d, w = Perks.DEFS[key], ui.perk[key]
+		local max = Perks:Max(key, c.trade)
+		local text = string.format("%s %d/%d", d.name, c[key] or 0, d.max)
+		w.label:SetText(max == 0 and muted(text) or text)
+	end
+	ui.cap:SetText("May spend " .. c.cap)
+	ui.woMode:SetText("WO: " .. (s.woMult and "multiplied" or "added"))
+	for _, name in ipairs(TABS) do
+		ui.tabs[name]:SetText(tab == name and ("[" .. name .. "]") or name)
+	end
+end
+
+function UI:Refresh()
+	if not (frame and frame:IsShown()) then return end
+	self:RefreshControls()
+	ui.summary:SetText(Summary())
+	ui.status:SetText(StatusText())
+	local ok, lines = pcall(BUILDERS[tab])
+	if not ok then lines = { { text = bad("CraftPath could not draw this tab: " .. tostring(lines)) } } end
+	self:Render(lines)
+end
+
+function UI:Soon()
+	CPath:Debounce("ui", 0.05, function() UI:Refresh() end)
+end
+
+function UI:SetTab(name)
+	tab = name
+	if ui and ui.scroll.SetVerticalScroll then ui.scroll:SetVerticalScroll(0) end
+	if name == "Board" and not Planner.board then Planner:Board() end
+	self:Refresh()
+end
+
+local function Stepper(parent, getText, onMinus, onPlus)
+	local w = {}
+	w.minus = Button(parent, "-", 22, onMinus)
+	w.label = Label(parent, "")
+	w.plus = Button(parent, "+", 22, onPlus)
+	w.label:SetPoint("LEFT", w.minus, "RIGHT", 4, 0)
+	w.plus:SetPoint("LEFT", w.label, "RIGHT", 4, 0)
+	return w
+end
+
+local function Build()
+	frame = NewFrame("Frame", "CraftPathFrame", UIParent)
+	frame:SetSize(WIDTH, HEIGHT)
+	frame:SetPoint("CENTER")
+	frame:SetFrameStrata("HIGH")
+	frame:SetMovable(true)
+	frame:EnableMouse(true)
+	frame:RegisterForDrag("LeftButton")
+	frame:SetScript("OnDragStart", frame.StartMoving)
+	frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
+	frame:SetClampedToScreen(true)
+	Skin(frame)
+	if UISpecialFrames then table.insert(UISpecialFrames, "CraftPathFrame") end
+	ui = { mode = {}, perk = {}, tabs = {} }
+
+	local title = Label(frame, "CraftPath", "GameFontNormalLarge")
+	title:SetPoint("TOPLEFT", 14, -12)
+	local sub = Label(frame, muted("cheapest route to a profession skill, in net gold"))
+	sub:SetPoint("LEFT", title, "RIGHT", 10, -1)
+	local close = Button(frame, "Close", 60, function() frame:Hide() end)
+	close:SetPoint("TOPRIGHT", -10, -8)
+
+	-- Row 1: profession, target, mode
+	local y1 = -42
+	ui.trade = Button(frame, "", 120, function() if ui.menu:IsShown() then ui.menu:Hide() else ui.menu:Show() end end)
+	ui.trade:SetPoint("TOPLEFT", 14, y1)
+	Tip(ui.trade, "Pick a profession. It does not need to be learned on this character.")
+	ui.menu = NewFrame("Frame", nil, frame)
+	ui.menu:SetFrameStrata("DIALOG")
+	ui.menu:SetSize(130, #CPath.TRADES * 22 + 8)
+	ui.menu:SetPoint("TOPLEFT", ui.trade, "BOTTOMLEFT", 0, -2)
+	Skin(ui.menu, 0.04, 0.03, 0.02, 1)
+	ui.menu:Hide()
+	for i, key in ipairs(CPath.TRADES) do
+		local b = Button(ui.menu, key, 122, function() ui.menu:Hide(); CPath:SetChar("trade", key) end)
+		b:SetPoint("TOPLEFT", 4, -4 - (i - 1) * 22)
+	end
+
+	local tl = Label(frame, "Target")
+	tl:SetPoint("LEFT", ui.trade, "RIGHT", 14, 0)
+	ui.target = CreateFrame("EditBox", "CraftPathTargetBox", frame, "InputBoxTemplate")
+	ui.target:SetSize(40, 20)
+	ui.target:SetAutoFocus(false)
+	ui.target:SetNumeric(true)
+	ui.target:SetMaxLetters(3)
+	ui.target:SetPoint("LEFT", tl, "RIGHT", 10, 0)
+	-- Typing a number and pressing Enter, or clicking anywhere else, sets the target. Escape puts the old one back.
+	local cancelled = false
+	local function commit()
+		local n = tonumber(ui.target:GetText())
+		if n and not cancelled then
+			n = math.max(2, math.min(300, math.floor(n)))
+			if n ~= CPath:Char().target then CPath:SetChar("target", n) end
+		end
+		cancelled = false
+		ui.target:SetText(tostring(CPath:Char().target))
+	end
+	ui.target:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+	ui.target:SetScript("OnEscapePressed", function(self) cancelled = true; self:ClearFocus() end)
+	ui.target:SetScript("OnEditFocusLost", commit)
+	ui.target:SetScript("OnEditFocusGained", function(self) self:HighlightText() end)
+	Tip(ui.target, "Type any skill from 2 to 300 and press Enter.")
+	local b150 = Button(frame, "150", 40, function() CPath:SetChar("target", 150) end)
+	b150:SetPoint("LEFT", ui.target, "RIGHT", 6, 0)
+	local b300 = Button(frame, "300", 40, function() CPath:SetChar("target", 300) end)
+	b300:SetPoint("LEFT", b150, "RIGHT", 2, 0)
+
+	local ml = Label(frame, "Recovery")
+	ml:SetPoint("LEFT", b300, "RIGHT", 16, 0)
+	local prev = ml
+	for i, m in ipairs(MODES) do
+		local b = Button(frame, m[2], 62, function() CPath:Set("recovery", m[1]) end)
+		b:SetPoint("LEFT", prev, "RIGHT", i == 1 and 8 or 2, 0)
+		Tip(b, MODE_HELP[m[1]])
+		ui.mode[m[1]] = b
+		prev = b
+	end
+	ui.de = Button(frame, "", 112, function() CPath:Set("de", not CPath.settings.de) end)
+	ui.de:SetPoint("LEFT", prev, "RIGHT", 10, 0)
+	Tip(ui.de, "Counts what a green or better result is worth disenchanted, when that beats selling it. Only turn this on if you have an enchanter to send things to. It is an average, not a promise.")
+	ui.hours = Button(frame, "", 92, function()
+		local h = CPath.settings.listHours
+		CPath:Set("listHours", h == 24 and 2 or (h == 2 and 8 or 24))
+	end)
+	ui.hours:SetPoint("LEFT", ui.de, "RIGHT", 2, 0)
+	Tip(ui.hours, "How long you list auctions for in Flip mode. The deposit you lose on things that do not sell is 60% of vendor value for 24 hours, less for shorter listings.")
+
+	-- Row 2: perks
+	local y2 = -70
+	local pl = Label(frame, "Legacy perks")
+	pl:SetPoint("TOPLEFT", 14, y2 - 5)
+	local anchor, first = pl, true
+	local function perkStep(key, delta)
+		return function()
+			local c = CPath:Char()
+			local n = math.max(0, math.min(Perks.DEFS[key].max, (c[key] or 0) + delta))
+			if n ~= c[key] then CPath:SetChar(key, n) end
+		end
+	end
+	for _, key in ipairs(Perks.ORDER) do
+		local w = Stepper(frame, nil, perkStep(key, -1), perkStep(key, 1))
+		w.minus:SetPoint("LEFT", anchor, "RIGHT", first and 10 or 14, 0)
+		Tip(w.minus, Perks.DEFS[key].name .. ": " .. Perks.DEFS[key].what .. ". Set this to the rank this character has.")
+		ui.perk[key] = w
+		anchor, first = w.plus, false
+	end
+	local capMinus = Button(frame, "-", 22, function() CPath:SetChar("cap", math.max(0, CPath:Char().cap - 1)) end)
+	capMinus:SetPoint("LEFT", anchor, "RIGHT", 18, 0)
+	ui.cap = Label(frame, "")
+	ui.cap:SetPoint("LEFT", capMinus, "RIGHT", 4, 0)
+	local capPlus = Button(frame, "+", 22, function() CPath:SetChar("cap", math.min(16, CPath:Char().cap + 1)) end)
+	capPlus:SetPoint("LEFT", ui.cap, "RIGHT", 4, 0)
+	Tip(capMinus, "How many of this character's 16 Legacy points the planner may spend on these perks when it works out the best allocation.")
+	ui.woMode = Button(frame, "", 104, function() CPath:Set("woMult", not CPath.settings.woMult) end)
+	ui.woMode:SetPoint("LEFT", capPlus, "RIGHT", 12, 0)
+	Tip(ui.woMode, "Whether Working Overtime adds its bonus to the skill-up chance (50% becomes 70% at rank 5) or multiplies it (50% becomes 60%). The game's wording does not say. The Log tab works out which fits from your own crafting.")
+
+	-- Summary
+	ui.summary = Label(frame, "", "GameFontHighlight")
+	ui.summary:SetPoint("TOPLEFT", 14, -102)
+	ui.summary:SetWidth(WIDTH - 28)
+	ui.summary:SetJustifyV("TOP")
+	ui.summary:SetSpacing(3)
+
+	-- Tabs
+	local px
+	for i, name in ipairs(TABS) do
+		local b = Button(frame, name, 104, function() UI:SetTab(name) end)
+		if i == 1 then b:SetPoint("TOPLEFT", 14, -144) else b:SetPoint("LEFT", px, "RIGHT", 2, 0) end
+		ui.tabs[name] = b
+		px = b
+	end
+
+	-- List
+	local well = NewFrame("Frame", nil, frame)
+	well:SetPoint("TOPLEFT", 12, -170)
+	well:SetPoint("BOTTOMRIGHT", -12, 44)
+	Skin(well, 0.03, 0.025, 0.02, 0.9)
+	ui.scroll = CreateFrame("ScrollFrame", "CraftPathScroll", well, "UIPanelScrollFrameTemplate")
+	ui.scroll:SetPoint("TOPLEFT", 8, -6)
+	ui.scroll:SetPoint("BOTTOMRIGHT", -28, 6)
+	ui.content = CreateFrame("Frame", nil, ui.scroll)
+	ui.content:SetSize(LIST_W, 10)
+	ui.scroll:SetScrollChild(ui.content)
+
+	-- Bottom bar
+	local list = Button(frame, "Auctionator list", 130, function()
+		local ok, msg = CPath.Shopping:CreateList(Planner.state)
+		CPath:Print(msg)
+	end)
+	list:SetPoint("BOTTOMLEFT", 12, 12)
+	Tip(list, "Creates an Auctionator shopping list of what this route needs from the auction house, with quantities, less what is in your bags and bank. Replaces any list with the same name.")
+	local copy = Button(frame, "Copy as text", 110, function()
+		if not Planner.state.result then return end
+		UI:ShowCopy("CraftPath: " .. Planner.state.trade, CPath.Shopping:Text(Planner.state))
+	end)
+	copy:SetPoint("LEFT", list, "RIGHT", 4, 0)
+	local refresh = Button(frame, "Refresh", 80, function() Planner:Plan() end)
+	refresh:SetPoint("LEFT", copy, "RIGHT", 4, 0)
+	Tip(refresh, "Reads prices, bags and skill again and works the route out afresh.")
+	ui.status = Label(frame, "")
+	ui.status:SetPoint("LEFT", refresh, "RIGHT", 12, 0)
+	ui.status:SetPoint("RIGHT", frame, "RIGHT", -12, 0)
+	ui.status:SetJustifyH("RIGHT")
+
+	frame:SetScript("OnShow", function()
+		if Planner.dirty or not Planner.state.trade then Planner:Plan() end
+		UI:Refresh()
+	end)
+	frame:Hide()
+end
+
+function UI:IsShown()
+	return frame ~= nil and frame:IsShown()
+end
+
+function UI:Toggle()
+	if not CPath.db then CPath:Print("Still loading. Try again in a moment."); return end
+	if not frame then
+		local ok, err = pcall(Build)
+		if not ok then
+			frame = nil
+			CPath:Print("Could not build the window: %s", tostring(err))
+			return
+		end
+	end
+	if frame:IsShown() then frame:Hide() else frame:Show() end
+end
+
+for _, event in ipairs({ "PLAN", "BOARD", "ITEMS_LOADED", "BAGS", "SKILLLOG", "DB_CHANGED" }) do
+	CPath:On(event, function() UI:Soon() end)
+end
+CPath:On("SETTINGS_CHANGED", function() if frame then UI:RefreshControls() end end)
+CPath:On("LOGIN", function()
+	CPath:After(4, function()
+		local problem = CPath:DataProblem()
+		if problem then CPath:Print(problem) else CPath:Print("Type /craftpath to open the planner.") end
+	end)
+end)

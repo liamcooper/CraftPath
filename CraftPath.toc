@@ -1,0 +1,21 @@
+## Interface: 16001
+## Title: CraftPath
+## Notes: Cheapest route to a profession skill target in net gold, with Legacy perks, recovery modes, an Auctionator shopping list with quantities, and craft and restock buttons.
+## Author: Liam
+## Version: 1.0.0
+## Dependencies: ForeverMaster, Auctionator
+## SavedVariables: CraftPathDB
+## IconTexture: Interface\Icons\INV_Misc_Map_01
+## X-Category: Professions
+## X-License: Personal use only. Solver.lua is derived from ForeverMaster and DisenchantData.lua from Auctionator; do not distribute.
+
+Core.lua
+DisenchantData.lua
+Solver.lua
+Prices.lua
+Perks.lua
+Planner.lua
+Shopping.lua
+SkillLog.lua
+Execute.lua
+UI.lua
