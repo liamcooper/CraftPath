@@ -365,6 +365,8 @@ SlashCmdList["CRAFTPATH"] = function(msg)
 	msg = (msg or ""):lower():match("^%s*(.-)%s*$")
 	if msg == "status" then
 		CPath:Print("ForeverMaster data %s. Saved data: %s. %s", CPath:DataVersion(), CPath.loadedFrom or "none yet (new install, or not loaded)", CPath:DataProblem() or "Data format OK.")
+	elseif msg == "minimap" then
+		if CPath.MinimapButton then CPath.MinimapButton:Toggle() end
 	elseif CPath.UI then
 		CPath.UI:Toggle()
 	end

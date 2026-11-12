@@ -32,6 +32,7 @@ function CreateFrame(_, name) return Mock(name) end
 UIParent = Mock("UIParent")
 GameTooltip = Mock("GameTooltip")
 MerchantFrame = Mock("MerchantFrame"); MerchantFrame.__shown = false
+Minimap = Mock("Minimap"); rawset(Minimap, "GetWidth", function() return 140 end)
 BackdropTemplateMixin = {}
 UISpecialFrames = {}
 SlashCmdList = {}
@@ -169,6 +170,20 @@ do
   check(CPath:Char().target == 87 and box:GetText() == "87", "Escape puts the old target back")
   focused = true; box:SetText("999"); box:ClearFocus(); settle()
   check(CPath:Char().target == 300, "target is clamped to 300")
+end
+
+-- 1c. minimap button: opens and closes the window, and can be hidden
+do
+  local b = frames.CraftPathMinimapButton
+  check(b and b:IsShown(), "minimap button exists")
+  local was = CPath.UI:IsShown()
+  b.__scripts.OnClick(b); check(CPath.UI:IsShown() ~= was, "minimap click toggles the window")
+  b.__scripts.OnClick(b); check(CPath.UI:IsShown() == was, "and back")
+  SlashCmdList.CRAFTPATH("minimap"); check(not b:IsShown() and CPath.db.minimap.hide, "slash command hides it")
+  SlashCmdList.CRAFTPATH("minimap"); check(b:IsShown(), "and shows it again")
+  CraftPath_OnCompartmentClick(); CraftPath_OnCompartmentClick()
+  check(CPath.UI:IsShown() == was, "addon list entry toggles too")
+  settle()
 end
 
 -- 2. modes, disenchant, perks

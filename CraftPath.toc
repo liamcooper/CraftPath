@@ -7,6 +7,8 @@
 ## SavedVariables: CraftPathDB
 ## IconTexture: Interface\Icons\INV_Misc_Map_01
 ## X-Category: Professions
+## OptionalDeps: LibDBIcon-1.0, LibDataBroker-1.1
+## AddonCompartmentFunc: CraftPath_OnCompartmentClick
 ## X-License: Personal use only. Solver.lua is derived from ForeverMaster and DisenchantData.lua from Auctionator; do not distribute.
 
 Core.lua
@@ -19,3 +21,4 @@ Shopping.lua
 SkillLog.lua
 Execute.lua
 UI.lua
+Minimap.lua
