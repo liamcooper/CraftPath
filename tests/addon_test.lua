@@ -91,6 +91,25 @@ Auctionator = {
   Database = { GetPriceHistory = function(_, key) return { { available = tonumber(key) % 30 } } end },
 }
 
+-- auction house listings ---------------------------------------------------------------------------------
+-- Every item has plenty at its cheapest price, except `steep`, which runs out fast and then costs 20 times as much.
+local steep, searches = nil, 0
+local function ladderOf(id)
+  local base = ah(id)
+  if not base then return {} end
+  if id == steep then return { { base, 50 }, { base * 20, 100 } } end
+  return { { base, 100000 } }
+end
+C_AuctionHouse = {
+  MakeItemKey = function(id) return { itemID = id } end,
+  GetItemKeyInfo = function() return { isCommodity = true } end,
+  IsThrottledMessageSystemReady = function() return true end,
+  SendSearchQuery = function(key) searches = searches + 1; queue[#queue + 1] = function() __fire("COMMODITY_SEARCH_RESULTS_UPDATED", key.itemID) end end,
+  GetNumCommoditySearchResults = function(id) return #ladderOf(id) end,
+  GetCommoditySearchResultInfo = function(id, i) local t = ladderOf(id)[i]; return { unitPrice = t[1], quantity = t[2] } end,
+  HasFullCommoditySearchResults = function() return true end,
+}
+
 -- merchant -----------------------------------------------------------------------------------------------
 local merchant, bought = {}, {}
 function GetMerchantNumItems() return #merchant end
@@ -112,6 +131,7 @@ local function fire(event, ...)
     if h then h(f, event, ...) end
   end
 end
+__fire = fire
 local rendered = {}
 local function hookRender()
   local orig = CPath.UI.Render
@@ -262,6 +282,68 @@ do
     settle()
     check(next(CPath:Char().excluded.Tailoring) == nil, "Undo clears it")
   end
+end
+
+-- 3c. Check prices: listings are read, and a material that is dear in bulk costs what it really costs
+do
+  CPath:SetChar("trade", "Tailoring"); CPath:SetChar("target", 300); CPath:Set("recovery", "strict"); settle()
+  local before = CPath.Planner.state.result
+  local needs = CPath.Planner.AhNeeds(before)
+  local top, topQty = nil, 0
+  for id, q in pairs(needs) do if q > topQty and ah(id) then top, topQty = id, q end end
+  check(top ~= nil and topQty > 150, "a material is bought in bulk: " .. tostring(topQty))
+  steep = top
+  CPath.Planner:CheckPrices(); settle()
+  check(#chat > 0 and chat[#chat]:find("Open the auction house first"), "needs the auction house open: " .. tostring(chat[#chat]))
+  fire("AUCTION_HOUSE_SHOW")
+  CPath.Planner:CheckPrices(); settle()
+  check(not CPath.Planner:Checking() and searches > 0, "the check ran and finished (" .. searches .. " searches)")
+  local after = CPath.Planner.state.result
+  check(CPath.Planner.state.status == "done", "planned again after the check")
+  local unread = 0
+  for id in pairs(CPath.Planner.AhNeeds(after)) do if not CPath.Depth:Age(id) then unread = unread + 1 end end
+  check(unread == 0, "every material the final route buys has had its listings read (" .. unread .. " unread)")
+  check(after.net >= before.net, string.format("the real cost is not below the cheapest-listing cost: %d vs %d", after.net, before.net))
+  local qtyAfter = CPath.Planner.AhNeeds(after)[top] or 0
+  local d = after.depth[top]
+  check(qtyAfter < topQty or (d and d.short > 0), string.format("the dear material is used less (%d to %d) or flagged short", topQty, qtyAfter))
+  if qtyAfter > 0 then
+    local total = CPath.Depth:Cost(top, qtyAfter)
+    check(d and d.avg and math.abs(after.price[top] * qtyAfter - total) <= qtyAfter, "its unit price shown is the real average")
+  end
+  -- what the route would have cost had it stayed put: the new route must not be dearer than that
+  local stay = 0
+  for id, q in pairs(needs) do local t = CPath.Depth:Cost(id, q); if t then stay = stay + (t - ah(id) * q) end end
+  check(after.net <= before.net + stay + 1, string.format("moving away never costs more than staying: %d vs %d", after.net, before.net + stay))
+  print(string.format("  depth: %s need %d -> %d; net %.2fg -> %.2fg (staying put would be %.2fg)", tostring(top), topQty, qtyAfter, before.net / 10000, after.net / 10000, (before.net + stay) / 10000))
+  show("Shopping"); show("Route", true)
+  local n = searches
+  CPath.Planner:CheckPrices(); settle()
+  check(searches == n, "a second check straight away reads nothing again")
+  -- a shorter route with alternatives: the planner should move off a material that is dear in bulk
+  for k in pairs(CPath.db.ladders) do CPath.db.ladders[k] = nil end
+  steep = nil
+  for _, target in ipairs({ 100, 150, 200 }) do
+    CPath:SetChar("target", target); settle()
+    local b = CPath.Planner.state.result
+    local nd, t2, q2 = CPath.Planner.AhNeeds(b), nil, 0
+    for id, q in pairs(nd) do if q > q2 and ah(id) then t2, q2 = id, q end end
+    steep = t2
+    CPath.Planner:CheckPrices(); settle()
+    local a2 = CPath.Planner.state.result
+    local qa = CPath.Planner.AhNeeds(a2)[t2] or 0
+    local stay2 = 0
+    for id, q in pairs(nd) do local t = CPath.Depth:Cost(id, q); if t then stay2 = stay2 + (t - ah(id) * q) end end
+    check(a2.net <= b.net + stay2 + 1, string.format("to %d: moving never costs more than staying: %d vs %d", target, a2.net, b.net + stay2))
+    print(string.format("  depth to %d: %s need %d -> %d; net %.2fg -> %.2fg (staying put %.2fg)", target, tostring(t2), q2, qa, b.net / 10000, a2.net / 10000, (b.net + stay2) / 10000))
+    steep = nil
+    for k in pairs(CPath.db.ladders) do CPath.db.ladders[k] = nil end
+  end
+  CPath:SetChar("target", 300); settle()
+  fire("AUCTION_HOUSE_CLOSED")
+  steep = nil
+  for k in pairs(CPath.db.ladders) do CPath.db.ladders[k] = nil end
+  CPath.Planner:Plan(); settle()
 end
 
 -- 4. shopping list, Auctionator, text, bags

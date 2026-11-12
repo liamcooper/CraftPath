@@ -88,6 +88,12 @@ What this addon adds over ForeverMaster:
   - The game only reports the real deposit at the auction house with the item in the sell slot (`GetAuctionDeposit`), so the planner estimates it: 60% of the item's vendor sell price for a 24-hour listing. That is measured on Forever (check V7) from one item, and is double the classic rate.
   - Listing length is a setting: 2, 8 or 24 hours, default 24. Shorter listings are assumed to scale with time (5% and 20%) until measured.
   - Confirmed in game: the deposit is refunded when the item sells and the 5% fee is kept. Each receipt shows the deposit it assumed.
+- **Prices by quantity (Liam, 12 Nov 2026).** The cheapest listing is not the price of 1,500 of something. A "Check prices" button at the auction house reads the real listings of the materials the route buys, as a ladder of prices and quantities. CraftPath does this itself; it does not use CraftProfit.
+  - The planner costs each route by walking up those ladders, gives each material its average price for the quantity used, and plans again, a few times over. A material that gets dear in bulk moves the route to another. The route with the lowest real cost is kept.
+  - After each read the route is planned again, and any material it now uses that is still unread is read too, so an alternative never looks cheap only because nobody looked.
+  - Units beyond what is listed are priced at the dearest listing and flagged as not available right now.
+  - Without a read, the planner falls back to the cheapest listing and warns when Auctionator saw fewer listed than the route needs.
+  - Ladders are a snapshot: kept for 24 hours, re-read after 10 minutes.
 - **Gathered mats (decided):** herbs, ore, leather and other farmable mats are counted at AH price, since a mat you farm could have been sold.
 - **Missing prices.** An item with no AH or vendor price is shown as unpriced and the route says how many reagents were priced. No silent zeros.
 

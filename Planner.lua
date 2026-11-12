@@ -64,6 +64,89 @@ local function With(opts, alloc, trade)
 	return o
 end
 
+---------------------------------------------------------------------------
+-- Prices that depend on how much you buy
+---------------------------------------------------------------------------
+-- The solver takes one price per item. Where the auction listings of an item have been read (Depth.lua), a
+-- route's real cost is what its quantities cost walking up those listings. So: solve, cost the route
+-- properly, give the solver each item's average price for the quantity it used, and solve again. A material
+-- that gets dear in bulk pushes the route to another one. The route with the lowest real cost is kept.
+
+local function round(x) return math.floor(x + 0.5) end
+
+-- itemID -> units the route buys on the auction house, less what is in the bags and bank.
+local function AhNeeds(r)
+	local need = {}
+	for _, x in ipairs(r.list and r.list.buy or {}) do
+		if not (r.sources and r.sources[x.id] == "vendor") then
+			local n = x.count - CPath:ItemCount(x.id)
+			if n > 0 then need[x.id] = n end
+		end
+	end
+	return need
+end
+Planner.AhNeeds = AhNeeds
+
+-- Re-costs a solved route at the real listings. Sets r.depth (per item) and corrects r.net, the spend and
+-- the unit prices shown.
+local function TrueCost(r, opts)
+	if r.depthDone or r.net == nil then return r end
+	r.depthDone = true
+	local adj, depth = 0, {}
+	for id, qty in pairs(AhNeeds(r)) do
+		local flat = opts.prices and opts.prices[id] and opts.prices[id][1]
+		local total, avg, info = CPath.Depth:Cost(id, qty)
+		if total and flat then
+			adj = adj + (total - flat * qty)
+			depth[id] = info
+			if r.price then r.price[id] = round(avg) end
+		elseif info and info.none then
+			depth[id] = info
+		else
+			local listed = CPath.Prices:Listed(id)
+			if listed and listed < qty then depth[id] = { unread = true, qty = qty, listed = listed, short = qty - listed } end
+		end
+	end
+	r.depth, r.depthAdj = depth, round(adj)
+	r.net = r.net + r.depthAdj
+	if r.totals.spent then r.totals.spent = r.totals.spent + r.depthAdj end
+	return r
+end
+
+local ROUNDS = 4
+
+-- Returns the best route and the prices it was solved at (for comparing other allocations like for like).
+local function SolveDeep(input, opts, y, rounds)
+	local o, best, bestPrices = opts, nil, opts.prices
+	local high = {}
+	for _ = 1, rounds or ROUNDS do
+		local r = TrueCost(S.solveBest(input, o, y), o)
+		if not best or (r.net and best.net and r["end"] >= best["end"] and r.net < best.net) then best, bestPrices = r, o.prices end
+		if r.net == nil or not o.prices then break end
+		local np
+		for id, d in pairs(r.depth) do
+			local was = o.prices[id] and o.prices[id][1]
+			if d.avg and was then
+				-- never lower a price a bigger order already pushed up: that way the search settles
+				local want = math.max(d.avg, high[id] or 0)
+				high[id] = want
+				if math.abs(want - was) > was * 0.01 + 0.5 then
+					np = np or copy(o.prices)
+					np[id] = { want, o.prices[id][2] }
+				end
+			end
+		end
+		if not np then break end
+		o = copy(o)
+		o.prices = np
+	end
+	return best, bestPrices
+end
+
+local function SolveAt(input, opts, y)
+	return TrueCost(S.solveBest(input, opts, y), opts)
+end
+
 local function Start(trade)
 	local prof = CPath:Professions()[trade]
 	return prof and math.max(1, prof.rank) or 1, prof ~= nil, prof and prof.max or nil
@@ -92,17 +175,20 @@ function Planner:Plan()
 	local alloc = st.alloc
 	S.levelingAsync(function(yield)
 		local function y() if gen ~= mine then error(CANCEL, 0) end; yield() end
-		local result = S.solveBest(input, With(opts, alloc, trade), y)
+		local result, deepPrices = SolveDeep(input, With(opts, alloc, trade), y)
 		st.result, st.status = result, "comparing"
 		CPath:Fire("PLAN")
+		-- the comparisons below are solved at the prices this route settled on, then costed at the real listings
+		opts = copy(opts)
+		opts.prices = deepPrices
 
 		local zero = { wo = 0, barter = 0, chef = 0 }
-		st.zero = Perks:Same(alloc, zero) and result or S.solveBest(input, With(opts, zero, trade), y)
+		st.zero = Perks:Same(alloc, zero) and result or SolveAt(input, With(opts, zero, trade), y)
 
 		local bestAlloc, best = alloc, result
 		for _, a in ipairs(Perks:Frontier(alloc, st.cap, trade)) do
 			if not Perks:Same(a, alloc) then
-				local r = S.solveBest(input, With(opts, a, trade), y)
+				local r = SolveAt(input, With(opts, a, trade), y)
 				if r.net and r["end"] >= best["end"] and (not best.net or r.net < best.net) then bestAlloc, best = a, r end
 			end
 		end
@@ -114,7 +200,7 @@ function Planner:Plan()
 			if rank > 0 and Perks:Max(key, trade) > 0 then
 				local a = { wo = 0, barter = 0, chef = 0 }
 				a[key] = rank
-				local r = Perks:Same(a, bestAlloc) and best or S.solveBest(input, With(opts, a, trade), y)
+				local r = Perks:Same(a, bestAlloc) and best or SolveAt(input, With(opts, a, trade), y)
 				st.solo[#st.solo + 1] = { key = key, rank = rank, net = r.net, crafts = r.totals.crafts }
 			end
 		end
@@ -160,6 +246,71 @@ function Planner:MarkOwned(spell, owned)
 end
 
 ---------------------------------------------------------------------------
+-- "Check prices": read the real listings of what the route buys
+---------------------------------------------------------------------------
+-- A route re-priced by quantity may move to materials whose listings have not been read yet, and those would
+-- look cheap only because nobody looked. So after each read the route is planned again and any material it
+-- now uses that is still unread gets read too, a few times over.
+
+local CHECK_PASSES = 4
+local RECENT = 600   -- listings read in the last ten minutes are not read again
+local check
+
+local function Unread(st)
+	local needs, n = {}, 0
+	local r = st and st.result
+	if not r then return needs, 0 end
+	for id, qty in pairs(AhNeeds(r)) do
+		local age = CPath.Depth:Age(id)
+		if not age or age > RECENT then needs[id] = qty; n = n + 1 end
+	end
+	return needs, n
+end
+
+local function CheckPass()
+	if not check then return end
+	local st = Planner.state
+	if st.status ~= "done" then return end   -- wait for the plan in flight; PLAN fires again when it is done
+	local needs, n = Unread(st)
+	if n == 0 or check.passes >= CHECK_PASSES then
+		local read = check.read
+		check = nil
+		CPath:Print(read > 0 and "Prices checked for %d materials. The route now uses what they really cost in the quantities you need." or "The prices of this route's materials were checked in the last ten minutes.", read)
+		CPath:Fire("PLAN")
+		return
+	end
+	check.passes = check.passes + 1
+	check.waiting = true
+	local ok, msg = CPath.Depth:Scan(needs, function(done, _, closed)
+		if not check then return end
+		check.read = check.read + (done or 0)
+		check.waiting = false
+		if closed then
+			check = nil
+			CPath:Print("The auction house closed before every price was checked.")
+		end
+		Planner:Plan()
+	end)
+	if not ok then
+		check = nil
+		CPath:Print(msg)
+	end
+end
+
+function Planner:CheckPrices()
+	if check then return end
+	if not CPath.Depth:Available() then CPath:Print("This client has no per-item auction search CraftPath can use."); return end
+	if not CPath.Depth:IsOpen() then CPath:Print("Open the auction house first, then press Check prices."); return end
+	if not (self.state and self.state.result) then CPath:Print("There is no route yet."); return end
+	check = { passes = 0, read = 0 }
+	CheckPass()
+end
+
+function Planner:Checking() return check ~= nil end
+
+CPath:On("PLAN", function() if check and not check.waiting then CheckPass() end end)
+
+---------------------------------------------------------------------------
 -- Compare board: every profession to 150 and 300
 ---------------------------------------------------------------------------
 
@@ -188,7 +339,7 @@ function Planner:Board()
 				else
 					local o = With(opts, alloc, trade)
 					o.to = to
-					local r = S.solveBest(input, o, y)
+					local r = SolveDeep(input, o, y, 2)
 					row.cells[to] = { net = r.net, crafts = r.totals.crafts, stop = r["end"] }
 				end
 			end

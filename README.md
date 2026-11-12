@@ -9,6 +9,7 @@ Type `/craftpath` in game. Needs ForeverMaster and Auctionator.
 - Legacy perks per character, with a no-points against best-points comparison
 - Auctionator shopping list with quantities, less bags and bank
 - Compare board, opportunity crafts, craft and vendor-restock buttons, skill-up log
+- Check prices: reads the real auction listings of the route's materials, so bulk buys are costed at what they really cost and the route moves off a material that gets dear
 - Minimap button (`/craftpath minimap` hides or shows it)
 
 Requirements and decisions are in `REQUIREMENTS.md`.

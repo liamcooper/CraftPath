@@ -213,6 +213,20 @@ local function ReagentText(r, rec, made, bought)
 	return table.concat(parts, DOT), cost, #own > 0
 end
 
+-- What the listings say about buying this much of an item; nil when there is nothing worth saying.
+local function DepthNote(d)
+	if not d then return nil end
+	if d.none then return bad("none listed right now") .. muted(": the price shown is from the last full scan") end
+	if d.unread then return bad(string.format("need %d, about %d listed", d.qty, d.listed)) .. muted(": press Check prices at the auction house for the real cost") end
+	local parts = {}
+	if d.last > d.first * 1.05 then parts[#parts + 1] = "cheapest " .. M(d.first) .. ", dearest you would pay " .. M(d.last) end
+	if d.short > 0 then
+		parts[#parts + 1] = bad(d.full and (d.short .. " more than are listed") or (d.short .. " beyond the listings read")) .. muted(", priced at the dearest listing")
+	end
+	if #parts == 0 then return nil end
+	return table.concat(parts, DOT)
+end
+
 local function PerPoint(v)
 	if v < 0 then return "earns " .. M(-v) .. " per point" end
 	return M(v) .. " per point"
@@ -242,6 +256,21 @@ local function RouteLines()
 	end
 	if not priced then
 		lines[#lines + 1] = { text = bad("No auction prices for this profession's materials yet. Run an Auctionator scan at the auction house to see costs.") }
+	end
+	local warned, unread = 0, false
+	for id, d in pairs(r.depth or {}) do
+		if d.unread then unread = true end
+		if (d.none or d.unread or (d.short or 0) > 0) and warned < 6 then
+			warned = warned + 1
+			local what
+			if d.none then what = "none listed right now"
+			elseif d.unread then what = string.format("need %d, about %d listed at the last scan", d.qty, d.listed)
+			else what = string.format("need %d, %d listed", d.qty, d.covered) end
+			lines[#lines + 1] = { text = bad("Not enough on the auction house: ") .. CPath:ItemName(id) .. " (" .. what .. ")", item = id }
+		end
+	end
+	if unread then
+		lines[#lines + 1] = { text = "Costs above assume everything sells at the cheapest listing. Press Check prices at the auction house and the route is re-worked at what these quantities really cost.", muted = true }
 	end
 	lines[#lines].gap = 6
 	for k, s in ipairs(r.steps) do
@@ -387,12 +416,25 @@ local function ShoppingLines()
 			local text = string.format("%s x%d", CPath:ItemName(row.id), row.count)
 			if row.recipe then text = text .. muted("  (recipe for the route)") end
 			if row.have > 0 then text = text .. muted(string.format("  (need %d, have %d)", row.want, row.have)) end
+			local d = st.result.depth and st.result.depth[row.id]
 			lines[#lines + 1] = { text = text, indent = 1, item = row.id,
-				right = row.unit and (M(row.unit) .. " each = " .. M(row.unit * row.count)) or muted("no price") }
+				right = row.unit and (((d and d.avg and d.last > d.first * 1.005) and "average " or "") .. M(row.unit) .. " each = " .. M(row.unit * row.count)) or muted("no price") }
+			local note = DepthNote(d)
+			if note then lines[#lines + 1] = { text = note, indent = 2, muted = true } end
 		end
 		lines[#lines].gap = 6
 	end
 	section("Buy at the auction house", list.ah, list.ahCost, "Nothing: you have it all, or the rest comes from vendors.")
+	do
+		local read, total = 0, 0
+		for id in pairs(Planner.AhNeeds(st.result)) do
+			total = total + 1
+			if CPath.Depth:Age(id) then read = read + 1 end
+		end
+		if total > 0 and read < total then
+			lines[#lines + 1] = { text = string.format("%d of %d materials are priced at the cheapest listing only, however many you need. Press Check prices at the auction house to read the real listings.", total - read, total), muted = true, indent = 1, gap = 6 }
+		end
+	end
 	section("Buy from a vendor", list.vendor, list.vendorCost, "Nothing.")
 	if #list.vendor > 0 then
 		lines[#lines + 1] = { text = "Open a vendor that sells these and CraftPath shows a button above the vendor window to buy what is missing.", muted = true, indent = 1, gap = 6 }
@@ -589,7 +631,18 @@ local function StatusText()
 		else bits[#bits + 1] = string.format("%d of %d items have an auction price", s.priced, s.wanted) end
 		if s.dePending > 0 then bits[#bits + 1] = s.dePending .. " items still loading for disenchant values" end
 	end
-	bits[#bits + 1] = "ForeverMaster data " .. CPath:DataVersion()
+	if Planner:Checking() then
+		local done, total = CPath.Depth:Progress()
+		bits[#bits + 1] = total and string.format("checking prices %d/%d", done, total) or "checking prices"
+	elseif st.result then
+		local read, total = 0, 0
+		for id in pairs(Planner.AhNeeds(st.result)) do
+			total = total + 1
+			if CPath.Depth:Age(id) then read = read + 1 end
+		end
+		if total > 0 then bits[#bits + 1] = string.format("listings read for %d of %d materials", read, total) end
+	end
+	bits[#bits + 1] = "ForeverMaster " .. CPath:DataVersion()
 	return muted(table.concat(bits, "  -  "))
 end
 
@@ -808,8 +861,11 @@ local function Build()
 	local refresh = Button(frame, "Refresh", 80, function() Planner:Plan() end)
 	refresh:SetPoint("LEFT", copy, "RIGHT", 4, 0)
 	Tip(refresh, "Reads prices, bags and skill again and works the route out afresh.")
+	local checkBtn = Button(frame, "Check prices", 110, function() Planner:CheckPrices() end)
+	checkBtn:SetPoint("LEFT", refresh, "RIGHT", 4, 0)
+	Tip(checkBtn, "At the auction house: reads the real listings of the materials this route buys, so the plan uses what they cost in the quantities you need, not just the cheapest listing. If a material gets dear in bulk the route moves to another.")
 	ui.status = Label(frame, "")
-	ui.status:SetPoint("LEFT", refresh, "RIGHT", 12, 0)
+	ui.status:SetPoint("LEFT", checkBtn, "RIGHT", 12, 0)
 	ui.status:SetPoint("RIGHT", frame, "RIGHT", -12, 0)
 	ui.status:SetJustifyH("RIGHT")
 
@@ -837,7 +893,7 @@ function UI:Toggle()
 	if frame:IsShown() then frame:Hide() else frame:Show() end
 end
 
-for _, event in ipairs({ "PLAN", "BOARD", "ITEMS_LOADED", "BAGS", "SKILLLOG", "DB_CHANGED" }) do
+for _, event in ipairs({ "PLAN", "BOARD", "ITEMS_LOADED", "BAGS", "SKILLLOG", "DB_CHANGED", "DEPTH_PROGRESS" }) do
 	CPath:On(event, function() UI:Soon() end)
 end
 CPath:On("SETTINGS_CHANGED", function() if frame then UI:RefreshControls() end end)

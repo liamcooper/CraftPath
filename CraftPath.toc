@@ -15,6 +15,7 @@ Core.lua
 DisenchantData.lua
 Solver.lua
 Prices.lua
+Depth.lua
 Perks.lua
 Planner.lua
 Shopping.lua
