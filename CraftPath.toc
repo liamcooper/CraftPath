@@ -9,7 +9,7 @@
 ## X-Category: Professions
 ## OptionalDeps: LibDBIcon-1.0, LibDataBroker-1.1
 ## AddonCompartmentFunc: CraftPath_OnCompartmentClick
-## X-License: Personal use only. Solver.lua is derived from ForeverMaster and DisenchantData.lua from Auctionator; do not distribute.
+## X-Credits: Solver.lua is derived from ForeverMaster (foreverchanges.pro); DisenchantData.lua from Auctionator (plusmouse, Borjamacare).
 
 Core.lua
 DisenchantData.lua

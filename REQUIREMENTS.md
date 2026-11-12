@@ -1,7 +1,7 @@
 # Forever Profession Planner: Requirements
 
 Status: draft from chat with Liam, Maz, and Bob (Nov 2026). Revised 12 Nov 2026 after a feasibility review against the installed addons.
-Name: CraftPath. Personal addon, not distributed.
+Name: CraftPath. Public repository: https://github.com/liamcooper/CraftPath (made public 12 Nov 2026).
 
 ---
 
@@ -35,7 +35,7 @@ ForeverMaster already ships a route solver (`Lib/Leveling.lua`) and a Leveling p
 
 That solver cannot be called from another addon (it sits in ForeverMaster's private namespace), but CraftPath is a personal addon that will not be distributed, so we copy `Lib/Leveling.lua` into CraftPath as the starting point and extend it. We read ForeverMaster's data (the global `ForeverMasterData`) at runtime.
 
-If CraftPath is ever shared, this changes: ForeverMaster has no licence file, so the copied solver would need the author's permission or a rewrite.
+The repository was made public on 12 Nov 2026 at Liam's decision, with the derived files included and credited. ForeverMaster has no licence file and Auctionator is All Rights Reserved, so neither author has given permission; if either objects, the fix is to drop `Solver.lua` and `DisenchantData.lua` from the repository and have people generate them from their own installs with the scripts in `tools/`.
 
 What this addon adds over ForeverMaster:
 
@@ -229,7 +229,7 @@ These cannot be settled from the files. Results so far are from Liam's run on 12
 |---|---|
 | Inside CraftProfit or separate | Separate addon with no link to CraftProfit |
 | Name | CraftPath |
-| Distribution | Personal use only, not distributed |
+| Distribution | Public GitHub repository, derived files credited (Liam, 12 Nov 2026) |
 | Solver | Start from a copy of ForeverMaster's solver and extend it, over ForeverMaster's data |
 | Flip defaults | 5% cut, sell rate 0.35 to 0.9 by item kind, capped by listed quantity, deposit counted on the share that does not sell (24-hour listing, 60% of vendor sell) |
 | Skill-up default | Expected |
@@ -239,7 +239,7 @@ These cannot be settled from the files. Results so far are from Liam's run on 12
 
 ## 11. Open questions
 
-- None. Revisit the ForeverMaster solver copy if the addon is ever shared.
+- None.
 
 ---
 

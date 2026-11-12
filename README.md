@@ -1,6 +1,6 @@
 # CraftPath
 
-A personal World of Warcraft Forever addon: the cheapest route to a profession skill target, measured in net gold.
+A World of Warcraft Forever addon: the cheapest route to a profession skill target, measured in net gold.
 
 Type `/craftpath` in game. Needs ForeverMaster and Auctionator.
 
@@ -13,9 +13,14 @@ Type `/craftpath` in game. Needs ForeverMaster and Auctionator.
 
 Requirements and decisions are in `REQUIREMENTS.md`.
 
-## Not for distribution
+## Credits
 
-`Solver.lua` is derived from ForeverMaster's solver and `DisenchantData.lua` from Auctionator's classic disenchant table. Keep this repository private.
+CraftPath builds on two other addons:
+
+- `Solver.lua` is derived from the route solver in [ForeverMaster](https://foreverchanges.pro) (`Lib/Leveling.lua`), extended with Legacy perks, recovery modes, disenchant value and recipe buying. It also reads ForeverMaster's recipe data at runtime.
+- `DisenchantData.lua` is derived from the classic disenchant table in Auctionator, by plusmouse and Borjamacare.
+
+Those parts remain the work of their authors and are not covered by any licence granted here.
 
 ## Build and test
 
