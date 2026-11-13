@@ -209,8 +209,6 @@ function UI:Render(lines)
 		end
 		row.left:ClearAllPoints()
 		row.left:SetPoint("TOPLEFT", x, l.bg and -4 or -1)
-		row.action:ClearAllPoints()
-		row.action:SetPoint("TOPRIGHT", l.bg and -3 or 0, l.bg and -2 or 0)
 		row.left:SetFontObject(l.header and GameFontNormal or GameFontHighlightSmall)
 		local text = l.text or ""
 		if l.muted then text = muted(text) end
@@ -227,6 +225,22 @@ function UI:Render(lines)
 			row.action:Hide()
 		end
 		local h = math.max(l.bg and 22 or (l.header and 20 or 15), (row.left:GetStringHeight() or 12) + (l.bg and 8 or 4))
+		-- a row with a button is at least as tall as the button, with its text centred on it
+		row.action:ClearAllPoints()
+		if l.action then
+			h = math.max(h, 24)
+			if not l.bg then
+				row.left:ClearAllPoints()
+				row.left:SetPoint("TOPLEFT", x, -math.floor((h - (row.left:GetStringHeight() or 12)) / 2))
+			end
+			if l.action.inline then
+				-- straight after the text it belongs to
+				local w = math.min(row.left:GetStringWidth() or 0, LIST_W - indent - rightW - 104 - x)
+				row.action:SetPoint("TOPLEFT", x + w + 12, -2)
+			else
+				row.action:SetPoint("TOPRIGHT", l.bg and -3 or 0, -2)
+			end
+		end
 		row:SetHeight(h)
 		row:Show()
 		y = y + h + (l.gap or 0)
@@ -304,7 +318,9 @@ local function RouteLines()
 	local made, bought = {}, {}
 	for _, x in ipairs(r.list and r.list.made or {}) do made[x.id] = true end
 	for _, x in ipairs(r.list and r.list.buy or {}) do bought[x.id] = true end
-	lines[#lines + 1] = { text = string.format("%s %d to %d", st.trade, st.from, stop), header = true }
+	lines[#lines + 1] = { text = string.format("%s %d to %d", st.trade, st.from, stop), header = true,
+		action = { label = expandAll and "Less detail" or "All detail", fn = function() expandAll = not expandAll; UI:Refresh() end,
+			tip = "Shows or hides what to buy and why each step was chosen, for every step." } }
 	if not st.known then lines[#lines + 1] = { text = "This character has not learned " .. st.trade .. ". The route starts from skill 1.", muted = true } end
 	if stop < st.to then
 		lines[#lines + 1] = { text = bad(string.format("The recipes this character can get stop giving skill-ups at %d, short of %d.", stop, st.to)) }
@@ -332,8 +348,7 @@ local function RouteLines()
 	if unread then
 		lines[#lines + 1] = { text = "Costs below assume everything sells at the cheapest listing. Press Check prices at the auction house and the route is re-worked at what these quantities really cost.", muted = true }
 	end
-	lines[#lines + 1] = { text = "Click a step to see what to buy and why it was chosen.", muted = true, gap = 6,
-		action = { label = expandAll and "Less detail" or "All detail", fn = function() expandAll = not expandAll; UI:Refresh() end } }
+	lines[#lines + 1] = { text = "Click a step to see what to buy and why it was chosen.", muted = true, gap = 6 }
 	for k, s in ipairs(r.steps) do
 		local rec, info = r.recipes[s.spell], r.stepInfo[k]
 		local name = CPath:RecipeName(s.spell, rec.makes)
@@ -397,7 +412,7 @@ local function RouteLines()
 			else text = "Recipe: " .. M(p.price) .. " (" .. (SHORT[rec.source or ""] or "?") .. ")" end
 			recipeLine = { text = text, indent = 2, item = rec.taught_by }
 			if p.via == "ah" or p.limited then
-				recipeLine.action = { label = "Can't get it", fn = function() Planner:MarkExcluded(s.spell, true) end,
+				recipeLine.action = { label = "Can't get it", inline = true, fn = function() Planner:MarkExcluded(s.spell, true) end,
 					tip = "Plans the route again without this recipe: use this if it is sold out or no longer listed." }
 			end
 			lines[#lines + 1] = recipeLine
