@@ -206,6 +206,25 @@ do
   settle()
 end
 
+-- 1d. a step opens and closes on a click; "All detail" opens every step
+do
+  show("Route", true)
+  local n, head = #rendered, nil
+  for _, l in ipairs(rendered) do if l.onClick and l.bg then head = head or l end end
+  check(head ~= nil and head.icon ~= nil, "steps are clickable bands with an icon")
+  head.onClick(); settle()
+  check(#rendered > n, "clicking a step shows its detail")
+  for _, l in ipairs(rendered) do if l.onClick and l.bg then l.onClick(); break end end
+  settle()
+  check(#rendered == n, "clicking again hides it")
+  for _, l in ipairs(rendered) do if l.action and l.action.label == "All detail" then l.action.fn(); break end end
+  settle()
+  check(#rendered > n + 3, "All detail opens every step")
+  for _, l in ipairs(rendered) do if l.action and l.action.label == "Less detail" then l.action.fn(); break end end
+  settle()
+  check(#rendered == n, "Less detail closes them")
+end
+
 -- 2. modes, disenchant, perks
 show("Route", true)
 local nets = {}

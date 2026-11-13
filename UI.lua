@@ -23,6 +23,7 @@ local FROM = { drop = "a drop", vendor = "a vendor", ["one side"] = "the other f
 
 local frame, ui
 local tab = "Route"
+local expanded, expandAll = {}, false   -- which steps show their detail
 
 local function col(hex, text) return "|cff" .. hex .. tostring(text) .. "|r" end
 local function muted(t) return col("9a8d74", t) end
@@ -36,28 +37,74 @@ local function pct(p) return string.format("%d%%", math.floor(p * 100 + 0.5)) en
 -- Widgets
 ---------------------------------------------------------------------------
 
-local function Skin(f, r, g, b, a)
+local BACKDROP = { bgFile = "Interface\\Buttons\\WHITE8x8", edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 }
+
+-- Fill and 1px border, on clients with and without backdrops.
+local function Paint(f, r, g, b, a, er, eg, eb)
 	if f.SetBackdrop then
-		f:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8", edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
-		f:SetBackdropColor(r or 0.07, g or 0.05, b or 0.03, a or 0.96)
-		f:SetBackdropBorderColor(0.42, 0.35, 0.24, 1)
+		if not f.__painted then f:SetBackdrop(BACKDROP); f.__painted = true end
+		f:SetBackdropColor(r, g, b, a)
+		f:SetBackdropBorderColor(er or 0.36, eg or 0.30, eb or 0.20, 1)
 	else
-		local t = f:CreateTexture(nil, "BACKGROUND")
-		t:SetAllPoints()
-		t:SetColorTexture(r or 0.07, g or 0.05, b or 0.03, a or 0.96)
+		if not f.__fill then f.__fill = f:CreateTexture(nil, "BACKGROUND"); f.__fill:SetAllPoints() end
+		f.__fill:SetColorTexture(r, g, b, a)
 	end
+end
+
+local function Skin(f, r, g, b, a)
+	Paint(f, r or 0.055, g or 0.045, b or 0.035, a or 1)
 end
 
 local function NewFrame(kind, name, parent)
 	return CreateFrame(kind, name, parent, BackdropTemplateMixin and "BackdropTemplate" or nil)
 end
 
+-- A flat button. SetSelected(true) marks the current choice of a group (mode, tab, switch that is on).
 local function Button(parent, text, width, onClick)
-	local b = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+	local b = NewFrame("Button", nil, parent)
 	b:SetSize(width, 22)
+	b.label = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	b.label:SetPoint("CENTER", 0, 0)
+	local glow = b:CreateTexture(nil, "HIGHLIGHT")
+	glow:SetAllPoints()
+	glow:SetColorTexture(1, 0.82, 0, 0.12)
+	function b:SetText(t) self.label:SetText(t) end
+	function b:GetText() return self.label:GetText() end
+	function b:GetFontString() return self.label end
+	function b:SetSelected(on)
+		if on then
+			Paint(self, 0.36, 0.26, 0.05, 1, 1, 0.82, 0)
+			self.label:SetTextColor(1, 0.82, 0)
+		else
+			Paint(self, 0.13, 0.105, 0.08, 1)
+			self.label:SetTextColor(0.91, 0.86, 0.78)
+		end
+	end
+	b:SetSelected(false)
 	b:SetText(text)
 	b:SetScript("OnClick", onClick)
 	return b
+end
+
+local function Icon(itemID, spellID)
+	if itemID then
+		if C_Item and C_Item.GetItemIconByID then
+			local ok, t = pcall(C_Item.GetItemIconByID, itemID)
+			if ok and t and t ~= 0 then return t end
+		end
+		if GetItemIcon then
+			local ok, t = pcall(GetItemIcon, itemID)
+			if ok and t and t ~= 0 then return t end
+		end
+	end
+	if spellID then
+		local fn = (C_Spell and C_Spell.GetSpellTexture) or _G.GetSpellTexture
+		if fn then
+			local ok, t = pcall(fn, spellID)
+			if ok and t and t ~= 0 then return t end
+		end
+	end
+	return "Interface\\Icons\\INV_Misc_QuestionMark"
 end
 
 local function Label(parent, text, template)
@@ -116,22 +163,29 @@ end
 ---------------------------------------------------------------------------
 -- Line renderer
 ---------------------------------------------------------------------------
--- A line: { text, right, indent, header, muted, item, action = { label, fn, tip } }
+-- A line: { text, right, indent, header, muted, item, icon, bg, onClick, action = { label, fn, tip } }
+-- bg draws the row as a band (the head of a step); onClick makes the whole row clickable.
 
 local rows = {}
 local function Row(i)
 	if rows[i] then return rows[i] end
 	local row = CreateFrame("Button", nil, ui.content)
+	row.bg = row:CreateTexture(nil, "BACKGROUND")
+	row.bg:SetAllPoints()
+	row.bg:SetColorTexture(1, 0.9, 0.7, 0.07)
+	row.icon = row:CreateTexture(nil, "ARTWORK")
+	row.icon:SetSize(16, 16)
+	row.icon:SetPoint("TOPLEFT", 4, -3)
+	row.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
 	row.left = Label(row)
-	row.left:SetPoint("TOPLEFT", 0, -1)
 	row.left:SetJustifyV("TOP")
 	if row.left.SetWordWrap then row.left:SetWordWrap(true) end
 	row.right = Label(row)
 	row.right:SetJustifyH("RIGHT")
-	row.action = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+	row.action = Button(row, "", 92, nil)
 	row.action:SetSize(92, 18)
-	row.action:SetPoint("TOPRIGHT", 0, 0)
 	row.right:SetPoint("TOPRIGHT", row.action, "TOPLEFT", -8, -2)
+	row:SetScript("OnClick", function(self) if self.onClick then self.onClick() end end)
 	row:SetScript("OnEnter", function(self)
 		if not self.item then return end
 		GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
@@ -151,13 +205,26 @@ function UI:Render(lines)
 		row:ClearAllPoints()
 		row:SetPoint("TOPLEFT", ui.content, "TOPLEFT", indent, -y)
 		row:SetWidth(LIST_W - indent)
-		row.item = l.item
+		row.item, row.onClick = l.item, l.onClick
+		if l.bg then row.bg:Show() else row.bg:Hide() end
+		local x = l.bg and 6 or 0
+		if l.icon then
+			row.icon:SetTexture(l.icon)
+			row.icon:Show()
+			x = 26
+		else
+			row.icon:Hide()
+		end
+		row.left:ClearAllPoints()
+		row.left:SetPoint("TOPLEFT", x, l.bg and -4 or -1)
+		row.action:ClearAllPoints()
+		row.action:SetPoint("TOPRIGHT", l.bg and -3 or 0, l.bg and -2 or 0)
 		row.left:SetFontObject(l.header and GameFontNormal or GameFontHighlightSmall)
 		local text = l.text or ""
 		if l.muted then text = muted(text) end
 		row.right:SetText(l.right or "")
 		local rightW = (l.right and l.right ~= "") and (row.right:GetStringWidth() + 12) or 0
-		row.left:SetWidth(LIST_W - indent - rightW - 100)
+		row.left:SetWidth(LIST_W - indent - rightW - 104 - x)
 		row.left:SetText(text)
 		if l.action then
 			row.action:SetText(l.action.label)
@@ -167,7 +234,7 @@ function UI:Render(lines)
 		else
 			row.action:Hide()
 		end
-		local h = math.max(l.header and 20 or 15, (row.left:GetStringHeight() or 12) + 4)
+		local h = math.max(l.bg and 22 or (l.header and 20 or 15), (row.left:GetStringHeight() or 12) + (l.bg and 8 or 4))
 		row:SetHeight(h)
 		row:Show()
 		y = y + h + (l.gap or 0)
@@ -257,29 +324,36 @@ local function RouteLines()
 	if not priced then
 		lines[#lines + 1] = { text = bad("No auction prices for this profession's materials yet. Run an Auctionator scan at the auction house to see costs.") }
 	end
-	local warned, unread = 0, false
+	-- materials there are not enough of, on one line (the Shopping tab has the detail)
+	local short, unread = {}, false
 	for id, d in pairs(r.depth or {}) do
 		if d.unread then unread = true end
-		if (d.none or d.unread or (d.short or 0) > 0) and warned < 6 then
-			warned = warned + 1
-			local what
-			if d.none then what = "none listed right now"
-			elseif d.unread then what = string.format("need %d, about %d listed at the last scan", d.qty, d.listed)
-			else what = string.format("need %d, %d listed", d.qty, d.covered) end
-			lines[#lines + 1] = { text = bad("Not enough on the auction house: ") .. CPath:ItemName(id) .. " (" .. what .. ")", item = id }
-		end
+		if d.none then short[#short + 1] = CPath:ItemName(id) .. " (none listed)"
+		elseif d.unread then short[#short + 1] = string.format("%s (need %d, about %d listed)", CPath:ItemName(id), d.qty, d.listed)
+		elseif (d.short or 0) > 0 then short[#short + 1] = string.format("%s (need %d, %d listed)", CPath:ItemName(id), d.qty, d.covered) end
+	end
+	if #short > 0 then
+		table.sort(short)
+		local extra = #short > 5 and (", and " .. (#short - 5) .. " more") or ""
+		for i = #short, 6, -1 do short[i] = nil end
+		lines[#lines + 1] = { text = bad("Not enough on the auction house: ") .. table.concat(short, ", ") .. extra .. "." }
 	end
 	if unread then
-		lines[#lines + 1] = { text = "Costs above assume everything sells at the cheapest listing. Press Check prices at the auction house and the route is re-worked at what these quantities really cost.", muted = true }
+		lines[#lines + 1] = { text = "Costs below assume everything sells at the cheapest listing. Press Check prices at the auction house and the route is re-worked at what these quantities really cost.", muted = true }
 	end
-	lines[#lines].gap = 6
+	lines[#lines + 1] = { text = "Click a step to see what to buy and why it was chosen.", muted = true, gap = 6,
+		action = { label = expandAll and "Less detail" or "All detail", fn = function() expandAll = not expandAll; UI:Refresh() end } }
 	for k, s in ipairs(r.steps) do
 		local rec, info = r.recipes[s.spell], r.stepInfo[k]
 		local name = CPath:RecipeName(s.spell, rec.makes)
 		local matsText, matsCost, usesOwn = ReagentText(r, rec, made, bought)
 		local net = priced and (s.crafts * (matsCost - info.sale)) or nil
-		local line = { text = string.format("%s  %s", gold(s.from .. "-" .. s.to), s.rod and ("Make one " .. name .. " (tool for later enchants)") or (name .. " x" .. s.crafts)),
-			right = net and (net < 0 and good("earns " .. M(-net)) or M(net)) or nil, item = rec.makes and rec.makes.id }
+		local key = s.spell .. ":" .. s.from
+		local open = expandAll or expanded[key]
+		local line = { text = string.format("%s   %s", gold(s.from .. "-" .. s.to), s.rod and ("Make one " .. name .. " (tool for later enchants)") or (name .. muted("  x" .. s.crafts))),
+			right = net and (net < 0 and good("earns " .. M(-net)) or M(net)) or nil, item = rec.makes and rec.makes.id,
+			icon = Icon(rec.makes and rec.makes.id, s.spell), bg = true,
+			onClick = function() expanded[key] = not expanded[key] or nil; UI:Refresh() end }
 		if st.known then
 			line.action = { label = "Craft " .. s.crafts, fn = function() CPath.Execute:Craft(st, k) end,
 				tip = "Crafts as many of this step as the mats in your bags allow." }
@@ -288,7 +362,6 @@ local function RouteLines()
 		local p = purchase[s.spell]
 		local recipeLine
 		if priced then
-			if matsText ~= "" then lines[#lines + 1] = { text = matsText, muted = true, indent = 2 } end
 			local facts = {}
 			if s.rod then facts[#facts + 1] = "Tool, kept"
 			elseif s.keep then facts[#facts + 1] = "Kept for later steps"
@@ -306,7 +379,8 @@ local function RouteLines()
 			if p and (p.fee or 0) > 0 then facts[#facts + 1] = "Train " .. M(p.fee) end
 			if p and (p.price or 0) > 0 and not (p.via == "ah" or p.limited) then facts[#facts + 1] = "Recipe " .. M(p.price) .. " (" .. (SHORT[rec.source or ""] or "?") .. ")" end
 			lines[#lines + 1] = { text = table.concat(facts, DOT), muted = true, indent = 2 }
-			if info.alt and not s.rod then
+			if open and matsText ~= "" then lines[#lines + 1] = { text = matsText, muted = true, indent = 2 } end
+			if open and info.alt and not s.rod then
 				local alt = info.alt
 				local altName = CPath:RecipeName(alt.spell, alt.makes)
 				local text
@@ -351,7 +425,7 @@ local function RouteLines()
 		table.sort(extra, function(a, b) return a.id < b.id end)
 		lines[#lines + 1] = { text = "Also make these materials, before the steps that use them", header = true }
 		for _, e in ipairs(extra) do
-			local line = { text = string.format("%s x%d", CPath:ItemName(e.id), e.units), indent = 1, item = e.id }
+			local line = { text = CPath:ItemName(e.id) .. muted("  x" .. e.units), item = e.id, icon = Icon(e.id), bg = true }
 			if st.known and e.spell then
 				line.action = { label = "Craft " .. e.crafts, fn = function() CPath.Execute:CraftSpell(st, e.spell, e.crafts, e.rec) end,
 					tip = "Crafts as many as the mats in your bags allow." }
@@ -417,7 +491,7 @@ local function ShoppingLines()
 			if row.recipe then text = text .. muted("  (recipe for the route)") end
 			if row.have > 0 then text = text .. muted(string.format("  (need %d, have %d)", row.want, row.have)) end
 			local d = st.result.depth and st.result.depth[row.id]
-			lines[#lines + 1] = { text = text, indent = 1, item = row.id,
+			lines[#lines + 1] = { text = text, indent = 1, item = row.id, icon = Icon(row.id),
 				right = row.unit and (((d and d.avg and d.last > d.first * 1.005) and "average " or "") .. M(row.unit) .. " each = " .. M(row.unit * row.count)) or muted("no price") }
 			local note = DepthNote(d)
 			if note then lines[#lines + 1] = { text = note, indent = 2, muted = true } end
@@ -574,7 +648,7 @@ local function OpportunityLines()
 		elseif e.p > 0 then tag = col("ffff00", "  skill-up " .. pct(e.p))
 		else tag = muted("  no skill-up") end
 		if not e.usable then tag = tag .. muted("  recipe from " .. (e.source or "?")) end
-		lines[#lines + 1] = { text = name .. tag, indent = 1, item = e.makes and e.makes.id,
+		lines[#lines + 1] = { text = name .. tag, indent = 1, item = e.makes and e.makes.id, icon = Icon(e.makes and e.makes.id, e.spell),
 			right = good("+" .. M(e.profit)) .. muted("  mats " .. CPath:Money(e.cost) .. ", back " .. CPath:Money(e.sale) .. " " .. (HOW[e.how] or e.how)) }
 	end
 	return lines
@@ -618,7 +692,7 @@ local function Summary()
 	elseif st.status ~= "done" then
 		b = muted("Comparing Legacy point allocations...")
 	end
-	return a .. "\n" .. b
+	return a, b
 end
 
 local function StatusText()
@@ -653,9 +727,10 @@ function UI:RefreshControls()
 	-- never overwrite the box while it is being typed in
 	if not (ui.target.HasFocus and ui.target:HasFocus()) then ui.target:SetText(tostring(c.target)) end
 	for _, m in ipairs(MODES) do
-		ui.mode[m[1]]:SetText(s.recovery == m[1] and ("[" .. m[2] .. "]") or m[2])
+		ui.mode[m[1]]:SetSelected(s.recovery == m[1])
 	end
 	ui.de:SetText("Disenchant: " .. (s.de and "on" or "off"))
+	ui.de:SetSelected(s.de)
 	ui.hours:SetText("Listing: " .. s.listHours .. "h")
 	for _, key in ipairs(Perks.ORDER) do
 		local d, w = Perks.DEFS[key], ui.perk[key]
@@ -666,14 +741,16 @@ function UI:RefreshControls()
 	ui.cap:SetText("May spend " .. c.cap)
 	ui.woMode:SetText("WO: " .. (s.woMult and "multiplied" or "added"))
 	for _, name in ipairs(TABS) do
-		ui.tabs[name]:SetText(tab == name and ("[" .. name .. "]") or name)
+		ui.tabs[name]:SetSelected(tab == name)
 	end
 end
 
 function UI:Refresh()
 	if not (frame and frame:IsShown()) then return end
 	self:RefreshControls()
-	ui.summary:SetText(Summary())
+	local headline, detail = Summary()
+	ui.summary:SetText(headline or "")
+	ui.sub:SetText(detail or "")
 	ui.status:SetText(StatusText())
 	local ok, lines = pcall(BUILDERS[tab])
 	if not ok then lines = { { text = bad("CraftPath could not draw this tab: " .. tostring(lines)) } } end
@@ -716,12 +793,17 @@ local function Build()
 	if UISpecialFrames then table.insert(UISpecialFrames, "CraftPathFrame") end
 	ui = { mode = {}, perk = {}, tabs = {} }
 
+	local band = frame:CreateTexture(nil, "ARTWORK")
+	band:SetPoint("TOPLEFT", 1, -1)
+	band:SetPoint("TOPRIGHT", -1, -1)
+	band:SetHeight(32)
+	band:SetColorTexture(1, 0.82, 0, 0.07)
 	local title = Label(frame, "CraftPath", "GameFontNormalLarge")
-	title:SetPoint("TOPLEFT", 14, -12)
+	title:SetPoint("TOPLEFT", 14, -9)
 	local sub = Label(frame, muted("cheapest route to a profession skill, in net gold"))
 	sub:SetPoint("LEFT", title, "RIGHT", 10, -1)
 	local close = Button(frame, "Close", 60, function() frame:Hide() end)
-	close:SetPoint("TOPRIGHT", -10, -8)
+	close:SetPoint("TOPRIGHT", -8, -6)
 
 	-- Row 1: profession, target, mode
 	local y1 = -42
@@ -819,11 +901,12 @@ local function Build()
 	Tip(ui.woMode, "Whether Working Overtime adds its bonus to the skill-up chance (50% becomes 70% at rank 5) or multiplies it (50% becomes 60%). The game's wording does not say. The Log tab works out which fits from your own crafting.")
 
 	-- Summary
-	ui.summary = Label(frame, "", "GameFontHighlight")
+	ui.summary = Label(frame, "", "GameFontHighlightLarge")
 	ui.summary:SetPoint("TOPLEFT", 14, -102)
 	ui.summary:SetWidth(WIDTH - 28)
-	ui.summary:SetJustifyV("TOP")
-	ui.summary:SetSpacing(3)
+	ui.sub = Label(frame, "")
+	ui.sub:SetPoint("TOPLEFT", 14, -123)
+	ui.sub:SetWidth(WIDTH - 28)
 
 	-- Tabs
 	local px
@@ -838,7 +921,7 @@ local function Build()
 	local well = NewFrame("Frame", nil, frame)
 	well:SetPoint("TOPLEFT", 12, -170)
 	well:SetPoint("BOTTOMRIGHT", -12, 44)
-	Skin(well, 0.03, 0.025, 0.02, 0.9)
+	Skin(well, 0.03, 0.025, 0.02, 1)
 	ui.scroll = CreateFrame("ScrollFrame", "CraftPathScroll", well, "UIPanelScrollFrameTemplate")
 	ui.scroll:SetPoint("TOPLEFT", 8, -6)
 	ui.scroll:SetPoint("BOTTOMRIGHT", -28, 6)
