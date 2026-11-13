@@ -375,7 +375,7 @@ end
 -- When to replan
 ---------------------------------------------------------------------------
 
-CPath:On("SETTINGS_CHANGED", function() Planner:Invalidate() end)
+CPath:On("SETTINGS_CHANGED", function(key) if key ~= "showOptions" then Planner:Invalidate() end end)
 CPath:On("DB_CHANGED", function() Planner:Invalidate() end)
 CPath:On("PRICES_CHANGED", function() Planner:Invalidate() end)
 CPath:On("ITEMS_LOADED", function()

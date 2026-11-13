@@ -18,6 +18,7 @@ CPath.defaults = {
 	depositPer24 = 0.60,   -- deposit for 24 hours as a share of vendor sell value (measured on Forever)
 	cut = 0.05,            -- auction house cut
 	flipDepth = 20,        -- items assumed sellable when Auctionator has no listed quantity
+	showOptions = false,   -- the options panel in the window is open
 	woMult = false,        -- Working Overtime multiplies the chance instead of adding to it
 }
 CPath.charDefaults = { trade = "Tailoring", target = 300, wo = 0, barter = 0, chef = 0, cap = 16 }

@@ -225,6 +225,15 @@ do
   check(#rendered == n, "Less detail closes them")
 end
 
+-- 1e. the options panel opens and closes without planning the route again
+do
+  local before = CPath.Planner.state
+  check(not CPath.settings.showOptions, "options start closed")
+  CPath:Set("showOptions", true); settle()
+  check(CPath.Planner.state == before, "opening options does not re-plan")
+  CPath:Set("showOptions", false); settle()
+end
+
 -- 2. modes, disenchant, perks
 show("Route", true)
 local nets = {}

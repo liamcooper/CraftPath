@@ -37,52 +37,44 @@ local function pct(p) return string.format("%d%%", math.floor(p * 100 + 0.5)) en
 -- Widgets
 ---------------------------------------------------------------------------
 
-local BACKDROP = { bgFile = "Interface\\Buttons\\WHITE8x8", edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 }
-
--- Fill and 1px border, on clients with and without backdrops.
-local function Paint(f, r, g, b, a, er, eg, eb)
-	if f.SetBackdrop then
-		if not f.__painted then f:SetBackdrop(BACKDROP); f.__painted = true end
-		f:SetBackdropColor(r, g, b, a)
-		f:SetBackdropBorderColor(er or 0.36, eg or 0.30, eb or 0.20, 1)
-	else
-		if not f.__fill then f.__fill = f:CreateTexture(nil, "BACKGROUND"); f.__fill:SetAllPoints() end
-		f.__fill:SetColorTexture(r, g, b, a)
-	end
-end
+-- The game's own tooltip frame: dark fill, soft gold border.
+local BACKDROP = {
+	bgFile = "Interface\\ChatFrame\\ChatFrameBackground", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+	tile = true, tileSize = 16, edgeSize = 16, insets = { left = 4, right = 4, top = 4, bottom = 4 },
+}
 
 local function Skin(f, r, g, b, a)
-	Paint(f, r or 0.055, g or 0.045, b or 0.035, a or 1)
+	if f.SetBackdrop then
+		f:SetBackdrop(BACKDROP)
+		f:SetBackdropColor(r or 0.05, g or 0.04, b or 0.03, a or 0.97)
+		f:SetBackdropBorderColor(0.8, 0.66, 0.4, 1)
+	else
+		local t = f:CreateTexture(nil, "BACKGROUND")
+		t:SetAllPoints()
+		t:SetColorTexture(r or 0.05, g or 0.04, b or 0.03, a or 0.97)
+	end
 end
 
 local function NewFrame(kind, name, parent)
 	return CreateFrame(kind, name, parent, BackdropTemplateMixin and "BackdropTemplate" or nil)
 end
 
--- A flat button. SetSelected(true) marks the current choice of a group (mode, tab, switch that is on).
+-- The game's red button. SetSelected(true) marks the current choice of a group (mode, tab, a switch that
+-- is on): white text and the highlight held on.
 local function Button(parent, text, width, onClick)
-	local b = NewFrame("Button", nil, parent)
+	local b = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
 	b:SetSize(width, 22)
-	b.label = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	b.label:SetPoint("CENTER", 0, 0)
-	local glow = b:CreateTexture(nil, "HIGHLIGHT")
-	glow:SetAllPoints()
-	glow:SetColorTexture(1, 0.82, 0, 0.12)
-	function b:SetText(t) self.label:SetText(t) end
-	function b:GetText() return self.label:GetText() end
-	function b:GetFontString() return self.label end
-	function b:SetSelected(on)
-		if on then
-			Paint(self, 0.36, 0.26, 0.05, 1, 1, 0.82, 0)
-			self.label:SetTextColor(1, 0.82, 0)
-		else
-			Paint(self, 0.13, 0.105, 0.08, 1)
-			self.label:SetTextColor(0.91, 0.86, 0.78)
-		end
-	end
-	b:SetSelected(false)
 	b:SetText(text)
 	b:SetScript("OnClick", onClick)
+	function b:SetSelected(on)
+		if on then
+			if self.LockHighlight then self:LockHighlight() end
+			if self.SetNormalFontObject then self:SetNormalFontObject(GameFontHighlight) end
+		else
+			if self.UnlockHighlight then self:UnlockHighlight() end
+			if self.SetNormalFontObject then self:SetNormalFontObject(GameFontNormal) end
+		end
+	end
 	return b
 end
 
@@ -183,7 +175,7 @@ local function Row(i)
 	row.right = Label(row)
 	row.right:SetJustifyH("RIGHT")
 	row.action = Button(row, "", 92, nil)
-	row.action:SetSize(92, 18)
+	row.action:SetSize(92, 20)
 	row.right:SetPoint("TOPRIGHT", row.action, "TOPLEFT", -8, -2)
 	row:SetScript("OnClick", function(self) if self.onClick then self.onClick() end end)
 	row:SetScript("OnEnter", function(self)
@@ -312,8 +304,7 @@ local function RouteLines()
 	local made, bought = {}, {}
 	for _, x in ipairs(r.list and r.list.made or {}) do made[x.id] = true end
 	for _, x in ipairs(r.list and r.list.buy or {}) do bought[x.id] = true end
-	lines[#lines + 1] = { text = string.format("%s %d to %d: %d crafts", st.trade, st.from, stop, r.totals.crafts), header = true,
-		right = priced and r.net and ("net " .. M(r.net)) or nil }
+	lines[#lines + 1] = { text = string.format("%s %d to %d", st.trade, st.from, stop), header = true }
 	if not st.known then lines[#lines + 1] = { text = "This character has not learned " .. st.trade .. ". The route starts from skill 1.", muted = true } end
 	if stop < st.to then
 		lines[#lines + 1] = { text = bad(string.format("The recipes this character can get stop giving skill-ups at %d, short of %d.", stop, st.to)) }
@@ -716,7 +707,6 @@ local function StatusText()
 		end
 		if total > 0 then bits[#bits + 1] = string.format("listings read for %d of %d materials", read, total) end
 	end
-	bits[#bits + 1] = "ForeverMaster " .. CPath:DataVersion()
 	return muted(table.concat(bits, "  -  "))
 end
 
@@ -731,6 +721,15 @@ function UI:RefreshControls()
 	end
 	ui.de:SetText("Disenchant: " .. (s.de and "on" or "off"))
 	ui.de:SetSelected(s.de)
+	ui.optsBtn:SetSelected(s.showOptions)
+	-- with the panel shut, say what is set in it
+	local note = {}
+	local perks = Perks:Describe(Perks:Current(), c.trade)
+	note[#note + 1] = perks == "no points" and "No Legacy points" or perks
+	if s.de then note[#note + 1] = "Disenchant on" end
+	if s.recovery == "flip" then note[#note + 1] = "Listing " .. s.listHours .. "h" end
+	ui.optsNote:SetText(s.showOptions and "" or muted(table.concat(note, DOT)))
+	UI:Layout()
 	ui.hours:SetText("Listing: " .. s.listHours .. "h")
 	for _, key in ipairs(Perks.ORDER) do
 		local d, w = Perks.DEFS[key], ui.perk[key]
@@ -739,7 +738,7 @@ function UI:RefreshControls()
 		w.label:SetText(max == 0 and muted(text) or text)
 	end
 	ui.cap:SetText("May spend " .. c.cap)
-	ui.woMode:SetText("WO: " .. (s.woMult and "multiplied" or "added"))
+	ui.woMode:SetText("Working Overtime: " .. (s.woMult and "multiplied" or "added"))
 	for _, name in ipairs(TABS) do
 		ui.tabs[name]:SetSelected(tab == name)
 	end
@@ -778,6 +777,23 @@ local function Stepper(parent, getText, onMinus, onPlus)
 	return w
 end
 
+-- Places everything under the first row, lower when the options panel is open.
+function UI:Layout()
+	if not frame then return end
+	local open = CPath.settings.showOptions and true or false
+	local y = open and -126 or -72
+	if open then ui.opts:Show() else ui.opts:Hide() end
+	ui.summary:ClearAllPoints()
+	ui.summary:SetPoint("TOPLEFT", 14, y)
+	ui.sub:ClearAllPoints()
+	ui.sub:SetPoint("TOPLEFT", 14, y - 21)
+	ui.tabs[TABS[1]]:ClearAllPoints()
+	ui.tabs[TABS[1]]:SetPoint("TOPLEFT", 14, y - 42)
+	ui.well:ClearAllPoints()
+	ui.well:SetPoint("TOPLEFT", 12, y - 68)
+	ui.well:SetPoint("BOTTOMRIGHT", -12, 44)
+end
+
 local function Build()
 	frame = NewFrame("Frame", "CraftPathFrame", UIParent)
 	frame:SetSize(WIDTH, HEIGHT)
@@ -794,9 +810,9 @@ local function Build()
 	ui = { mode = {}, perk = {}, tabs = {} }
 
 	local band = frame:CreateTexture(nil, "ARTWORK")
-	band:SetPoint("TOPLEFT", 1, -1)
-	band:SetPoint("TOPRIGHT", -1, -1)
-	band:SetHeight(32)
+	band:SetPoint("TOPLEFT", 4, -4)
+	band:SetPoint("TOPRIGHT", -4, -4)
+	band:SetHeight(29)
 	band:SetColorTexture(1, 0.82, 0, 0.07)
 	local title = Label(frame, "CraftPath", "GameFontNormalLarge")
 	title:SetPoint("TOPLEFT", 14, -9)
@@ -860,20 +876,29 @@ local function Build()
 		ui.mode[m[1]] = b
 		prev = b
 	end
-	ui.de = Button(frame, "", 112, function() CPath:Set("de", not CPath.settings.de) end)
-	ui.de:SetPoint("LEFT", prev, "RIGHT", 10, 0)
+	-- Everything set once and then left alone lives in a panel that opens under the first row.
+	ui.optsBtn = Button(frame, "Options", 80, function() CPath:Set("showOptions", not CPath.settings.showOptions) end)
+	ui.optsBtn:SetPoint("LEFT", prev, "RIGHT", 16, 0)
+	Tip(ui.optsBtn, "Legacy perk ranks, disenchanting, auction listing length and the Working Overtime formula.")
+	ui.optsNote = Label(frame, "")
+	ui.optsNote:SetPoint("LEFT", ui.optsBtn, "RIGHT", 10, 0)
+	ui.optsNote:SetPoint("RIGHT", frame, "RIGHT", -14, 0)
+	ui.opts = CreateFrame("Frame", nil, frame)
+	ui.opts:SetPoint("TOPLEFT", 12, -68)
+	ui.opts:SetSize(WIDTH - 24, 54)
+	ui.de = Button(ui.opts, "", 124, function() CPath:Set("de", not CPath.settings.de) end)
+	ui.de:SetPoint("TOPLEFT", 2, -30)
 	Tip(ui.de, "Counts what a green or better result is worth disenchanted, when that beats selling it. Only turn this on if you have an enchanter to send things to. It is an average, not a promise.")
-	ui.hours = Button(frame, "", 92, function()
+	ui.hours = Button(ui.opts, "", 104, function()
 		local h = CPath.settings.listHours
 		CPath:Set("listHours", h == 24 and 2 or (h == 2 and 8 or 24))
 	end)
-	ui.hours:SetPoint("LEFT", ui.de, "RIGHT", 2, 0)
+	ui.hours:SetPoint("LEFT", ui.de, "RIGHT", 4, 0)
 	Tip(ui.hours, "How long you list auctions for in Flip mode. The deposit you lose on things that do not sell is 60% of vendor value for 24 hours, less for shorter listings.")
 
 	-- Row 2: perks
-	local y2 = -70
-	local pl = Label(frame, "Legacy perks")
-	pl:SetPoint("TOPLEFT", 14, y2 - 5)
+	local pl = Label(ui.opts, "Legacy perks")
+	pl:SetPoint("TOPLEFT", 2, -7)
 	local anchor, first = pl, true
 	local function perkStep(key, delta)
 		return function()
@@ -883,44 +908,41 @@ local function Build()
 		end
 	end
 	for _, key in ipairs(Perks.ORDER) do
-		local w = Stepper(frame, nil, perkStep(key, -1), perkStep(key, 1))
+		local w = Stepper(ui.opts, nil, perkStep(key, -1), perkStep(key, 1))
 		w.minus:SetPoint("LEFT", anchor, "RIGHT", first and 10 or 14, 0)
 		Tip(w.minus, Perks.DEFS[key].name .. ": " .. Perks.DEFS[key].what .. ". Set this to the rank this character has.")
 		ui.perk[key] = w
 		anchor, first = w.plus, false
 	end
-	local capMinus = Button(frame, "-", 22, function() CPath:SetChar("cap", math.max(0, CPath:Char().cap - 1)) end)
+	local capMinus = Button(ui.opts, "-", 22, function() CPath:SetChar("cap", math.max(0, CPath:Char().cap - 1)) end)
 	capMinus:SetPoint("LEFT", anchor, "RIGHT", 18, 0)
-	ui.cap = Label(frame, "")
+	ui.cap = Label(ui.opts, "")
 	ui.cap:SetPoint("LEFT", capMinus, "RIGHT", 4, 0)
-	local capPlus = Button(frame, "+", 22, function() CPath:SetChar("cap", math.min(16, CPath:Char().cap + 1)) end)
+	local capPlus = Button(ui.opts, "+", 22, function() CPath:SetChar("cap", math.min(16, CPath:Char().cap + 1)) end)
 	capPlus:SetPoint("LEFT", ui.cap, "RIGHT", 4, 0)
 	Tip(capMinus, "How many of this character's 16 Legacy points the planner may spend on these perks when it works out the best allocation.")
-	ui.woMode = Button(frame, "", 104, function() CPath:Set("woMult", not CPath.settings.woMult) end)
-	ui.woMode:SetPoint("LEFT", capPlus, "RIGHT", 12, 0)
+	ui.woMode = Button(ui.opts, "", 220, function() CPath:Set("woMult", not CPath.settings.woMult) end)
+	ui.woMode:SetPoint("LEFT", ui.hours, "RIGHT", 4, 0)
 	Tip(ui.woMode, "Whether Working Overtime adds its bonus to the skill-up chance (50% becomes 70% at rank 5) or multiplies it (50% becomes 60%). The game's wording does not say. The Log tab works out which fits from your own crafting.")
 
 	-- Summary
 	ui.summary = Label(frame, "", "GameFontHighlightLarge")
-	ui.summary:SetPoint("TOPLEFT", 14, -102)
 	ui.summary:SetWidth(WIDTH - 28)
 	ui.sub = Label(frame, "")
-	ui.sub:SetPoint("TOPLEFT", 14, -123)
 	ui.sub:SetWidth(WIDTH - 28)
 
 	-- Tabs
 	local px
 	for i, name in ipairs(TABS) do
 		local b = Button(frame, name, 104, function() UI:SetTab(name) end)
-		if i == 1 then b:SetPoint("TOPLEFT", 14, -144) else b:SetPoint("LEFT", px, "RIGHT", 2, 0) end
+		if i > 1 then b:SetPoint("LEFT", px, "RIGHT", 2, 0) end
 		ui.tabs[name] = b
 		px = b
 	end
 
 	-- List
 	local well = NewFrame("Frame", nil, frame)
-	well:SetPoint("TOPLEFT", 12, -170)
-	well:SetPoint("BOTTOMRIGHT", -12, 44)
+	ui.well = well
 	Skin(well, 0.03, 0.025, 0.02, 1)
 	ui.scroll = CreateFrame("ScrollFrame", "CraftPathScroll", well, "UIPanelScrollFrameTemplate")
 	ui.scroll:SetPoint("TOPLEFT", 8, -6)
@@ -952,6 +974,7 @@ local function Build()
 	ui.status:SetPoint("RIGHT", frame, "RIGHT", -12, 0)
 	ui.status:SetJustifyH("RIGHT")
 
+	UI:Layout()
 	frame:SetScript("OnShow", function()
 		if Planner.dirty or not Planner.state.trade then Planner:Plan() end
 		UI:Refresh()
